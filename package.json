@@ -19,7 +19,7 @@
     "local-first"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "devDependencies": {
     "electron": "^32.3.3"
   },
