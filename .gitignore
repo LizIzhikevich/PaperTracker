@@ -1,0 +1,7 @@
+node_modules/
+.pnpm-store/
+dist/
+out/
+.DS_Store
+*.log
+IMG_1188.png

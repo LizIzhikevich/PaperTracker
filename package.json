@@ -1,0 +1,29 @@
+{
+  "name": "paper-tracker",
+  "version": "0.1.0",
+  "description": "A local-first desktop paper workflow tracker for macOS and Windows.",
+  "main": "src/main.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js"
+  },
+  "keywords": [
+    "electron",
+    "papers",
+    "research",
+    "local-first"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^32.3.3"
+  },
+  "dependencies": {
+    "pdf-parse": "1.1.1"
+  }
+}
