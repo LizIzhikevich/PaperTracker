@@ -10,7 +10,10 @@
   "scripts": {
     "dev": "electron .",
     "start": "electron .",
-    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js"
+    "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js",
+    "dist": "electron-builder --publish=never",
+    "dist:mac": "electron-builder --mac --publish=never",
+    "dist:win": "electron-builder --win --publish=never"
   },
   "keywords": [
     "electron",
@@ -21,9 +24,54 @@
   "author": "",
   "license": "Apache-2.0",
   "devDependencies": {
-    "electron": "^32.3.3"
+    "electron": "^32.3.3",
+    "electron-builder": "^26.15.3"
   },
   "dependencies": {
     "pdf-parse": "1.1.1"
+  },
+  "build": {
+    "appId": "edu.ucla.papertracker",
+    "productName": "PaperTracker",
+    "asar": true,
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "README.md",
+      "LICENSE"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": false
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "LizIzhikevich",
+        "repo": "PaperTracker",
+        "releaseType": "draft"
+      }
+    ]
   }
 }
