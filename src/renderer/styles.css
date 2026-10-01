@@ -288,7 +288,8 @@ button:disabled {
 }
 
 .binder-group-title.is-category-drop-target,
-.binder-empty.is-category-drop-target {
+.binder-empty.is-category-drop-target,
+.binder-summary-list.is-category-drop-target {
   color: var(--blue);
   background: var(--blue-soft);
   border-color: rgba(83, 109, 149, 0.24);
@@ -695,6 +696,10 @@ button:disabled {
   background: #ffffff;
 }
 
+.binder-workspace {
+  grid-template-rows: 104px auto minmax(0, 1fr);
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -740,6 +745,45 @@ button:disabled {
   display: block;
   height: 100%;
   border-radius: inherit;
+}
+
+.read-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 36px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfcfd;
+}
+
+.read-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #6a737d;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.read-tab small {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  color: var(--faint);
+  background: #edf0f2;
+  text-align: center;
+}
+
+.read-tab:hover,
+.read-tab.is-active {
+  color: var(--ink);
+  border-color: #c9d1db;
+  background: #eef2f6;
 }
 
 .view-button {
@@ -975,6 +1019,39 @@ button:disabled {
   border-color: #45536c;
   box-shadow: 0 8px 18px rgba(36, 46, 60, 0.075);
   transform: translateY(-2px);
+}
+
+.binder-summary.is-dragging {
+  opacity: 0.45;
+}
+
+.binder-summary.is-reorder-before,
+.binder-summary.is-reorder-after {
+  border-color: var(--blue);
+  background: #f7faff;
+}
+
+.binder-summary.is-reorder-before::before,
+.binder-summary.is-reorder-after::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  width: 3px;
+  height: auto;
+  border-radius: 3px;
+  background: var(--blue);
+  box-shadow: none;
+  content: "";
+}
+
+.binder-summary.is-reorder-before::before {
+  right: auto;
+  left: 4px;
+}
+
+.binder-summary.is-reorder-after::before {
+  right: 4px;
+  left: auto;
 }
 
 .binder-summary-main {

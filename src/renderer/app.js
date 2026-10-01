@@ -5,6 +5,15 @@ const statusLabels = {
 };
 
 const statusOrder = ['to-read', 'reading', 'read'];
+const readTabs = [
+  { id: 'all', label: 'All read' },
+  { id: 'general', label: 'General' },
+  { id: 'background', label: 'Background' },
+  { id: 'methods', label: 'Methods' },
+  { id: 'results', label: 'Results' },
+  { id: 'to-cite', label: 'To cite' }
+];
+const assignableReadTabs = readTabs.filter((tab) => tab.id !== 'all');
 const createsFields = [
   {
     id: 'claim',
@@ -67,6 +76,7 @@ const state = {
   papers: [],
   selectedId: '',
   selectedBucketId: 'library',
+  readTab: 'all',
   query: '',
   contextMenu: null,
   isCreatingBinder: false,
@@ -456,6 +466,7 @@ function normalizePaper(input = {}, existing = {}) {
     status,
     priority,
     bucketId: String(input.bucketId || existing.bucketId || defaultBucketId),
+    readTab: normalizeReadTab(input.readTab || existing.readTab),
     deadline: String(input.deadline || existing.deadline || '').trim(),
     rating: Number.isFinite(rating) ? Math.max(0, Math.min(5, rating)) : 0,
     localPath: String(input.localPath || existing.localPath || '').trim(),
@@ -487,6 +498,10 @@ function normalizeCreates(input = {}, existing = {}) {
 
 function normalizePriority(priority) {
   return priority === 'high' ? 'high' : 'normal';
+}
+
+function normalizeReadTab(value) {
+  return assignableReadTabs.some((tab) => tab.id === value) ? value : 'general';
 }
 
 function createBrowserPaperApi() {
@@ -951,6 +966,7 @@ function renderReadingTicker(paper) {
 
 function renderLibraryShelf(label, binders) {
   const totals = rollupSummaries(binders);
+  const category = label.toLowerCase() === 'archived' ? 'archived' : 'active';
 
   return `
     <section class="library-shelf">
@@ -961,7 +977,7 @@ function renderLibraryShelf(label, binders) {
         <strong>${totals.toRead + totals.reading} queued / ${totals.read} read</strong>
       </header>
       <div class="binder-shelf">
-      <div class="binder-summary-list">
+      <div class="binder-summary-list" data-category-drop="${category}">
         ${binders.length ? binders.map(renderBinderSummary).join('') : '<div class="shelf-empty">No binders here yet. Drag one from the sidebar shelf when you are ready.</div>'}
       </div>
       </div>
@@ -975,7 +991,7 @@ function renderBinderSummary(summary) {
   const compactLabelClass = shelfLabel.length > 12 ? ' is-compact' : '';
 
   return `
-    <button class="binder-summary" data-bucket-id="${escapeHtml(summary.bucket.id)}" style="--binder-color: ${color}" title="${summary.total} paper${summary.total === 1 ? '' : 's'}">
+    <button class="binder-summary" data-bucket-id="${escapeHtml(summary.bucket.id)}" data-binder-id="${escapeHtml(summary.bucket.id)}" draggable="true" style="--binder-color: ${color}" title="${summary.total} paper${summary.total === 1 ? '' : 's'}">
       <span class="binder-summary-main">
         <span class="binder-label-track">
           <span class="binder-name${compactLabelClass}">${escapeHtml(shelfLabel)}</span>
@@ -1013,9 +1029,11 @@ function renderBoard() {
   const progress = getReadProgress(summary);
   const color = getBinderColor(currentBucket.id);
   const papers = getVisiblePapers();
+  const readPapers = papers.filter((paper) => paper.status === 'read');
+  const selectedReadTab = readTabs.some((tab) => tab.id === state.readTab) ? state.readTab : 'all';
 
   return `
-    <main class="workspace">
+    <main class="workspace binder-workspace">
       <header class="topbar">
         <div class="topbar-main">
           <div class="binder-title-block">
@@ -1028,10 +1046,46 @@ function renderBoard() {
         </div>
       </header>
 
+      ${renderReadTabs(readPapers, selectedReadTab)}
+
       <section class="board" aria-label="Reading status board">
-        ${statusOrder.map((status) => renderColumn(status, papers.filter((paper) => paper.status === status))).join('')}
+        ${statusOrder
+          .map((status) => {
+            const statusPapers = papers.filter((paper) => paper.status === status);
+            const visiblePapers =
+              status === 'read' && selectedReadTab !== 'all' ? statusPapers.filter((paper) => normalizeReadTab(paper.readTab) === selectedReadTab) : statusPapers;
+            return renderColumn(status, visiblePapers);
+          })
+          .join('')}
       </section>
     </main>
+  `;
+}
+
+function renderReadTabs(readPapers, selectedReadTab) {
+  const counts = readPapers.reduce(
+    (acc, paper) => {
+      const tab = normalizeReadTab(paper.readTab);
+      acc.all += 1;
+      acc[tab] = (acc[tab] || 0) + 1;
+      return acc;
+    },
+    { all: 0 }
+  );
+
+  return `
+    <nav class="read-tabs" aria-label="Read paper tabs">
+      ${readTabs
+        .map(
+          (tab) => `
+            <button class="read-tab ${selectedReadTab === tab.id ? 'is-active' : ''}" data-read-tab="${escapeHtml(tab.id)}" type="button">
+              <span>${escapeHtml(tab.label)}</span>
+              <small>${counts[tab.id] || 0}</small>
+            </button>
+          `
+        )
+        .join('')}
+    </nav>
   `;
 }
 
@@ -1180,6 +1234,15 @@ function renderInspector() {
       </div>
 
       <label class="field">
+        Read tab
+        <select data-field="readTab">
+          ${assignableReadTabs
+            .map((tab) => `<option value="${escapeHtml(tab.id)}" ${normalizeReadTab(paper.readTab) === tab.id ? 'selected' : ''}>${escapeHtml(tab.label)}</option>`)
+            .join('')}
+        </select>
+      </label>
+
+      <label class="field">
         Title
         <input data-field="title" value="${escapeHtml(paper.title)}">
       </label>
@@ -1325,6 +1388,13 @@ function bindEvents() {
     });
   });
 
+  document.querySelectorAll('[data-read-tab]').forEach((button) => {
+    button.addEventListener('click', () => {
+      state.readTab = readTabs.some((tab) => tab.id === button.dataset.readTab) ? button.dataset.readTab : 'all';
+      render();
+    });
+  });
+
   document.querySelectorAll('[data-binder-id]').forEach((button) => {
     button.addEventListener('contextmenu', (event) => {
       event.preventDefault();
@@ -1367,6 +1437,7 @@ function bindEvents() {
         }
 
         event.preventDefault();
+        event.stopPropagation();
         clearDropState(button);
         await reorderBinder(draggedId, target.id, isAfterMidpoint(button, event), getBucketCategory(target));
         return;
@@ -1379,6 +1450,7 @@ function bindEvents() {
       }
 
       event.preventDefault();
+      event.stopPropagation();
       clearDropState(button);
       state.selectedId = '';
       await updatePaperById(paperId, { bucketId: button.dataset.binderId }, { keepSelection: false });
@@ -1469,7 +1541,13 @@ function bindEvents() {
         return;
       }
 
-      await updatePaperById(paperId, { status: column.dataset.dropStatus });
+      const patch = { status: column.dataset.dropStatus };
+
+      if (column.dataset.dropStatus === 'read' && state.readTab !== 'all') {
+        patch.readTab = normalizeReadTab(state.readTab);
+      }
+
+      await updatePaperById(paperId, patch);
     });
   });
 
@@ -1774,6 +1852,10 @@ function getBinderDropClass(button, event) {
 
 function isAfterMidpoint(element, event) {
   const rect = element.getBoundingClientRect();
+  if (element.classList.contains('binder-summary')) {
+    return event.clientX > rect.left + rect.width / 2;
+  }
+
   return event.clientY > rect.top + rect.height / 2;
 }
 

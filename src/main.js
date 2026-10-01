@@ -11,6 +11,7 @@ const execFileAsync = promisify(execFile);
 const STATUSES = new Set(['to-read', 'reading', 'read']);
 const PRIORITIES = new Set(['normal', 'high']);
 const CREATES_FIELDS = ['claim', 'reasoning', 'evidence', 'assumptions', 'threats', 'extensions'];
+const READ_TABS = new Set(['general', 'background', 'methods', 'results', 'to-cite']);
 const BINDER_COLORS = [
   '#46385f',
   '#275f9b',
@@ -176,6 +177,7 @@ async function ensureStore() {
         normalized.status !== paper.status ||
         normalized.priority !== paper.priority ||
         normalized.bucketId !== paper.bucketId ||
+        normalized.readTab !== paper.readTab ||
         normalized.institutions !== paper.institutions ||
         normalized.abstract !== paper.abstract ||
         JSON.stringify(normalized.creates) !== JSON.stringify(paper.creates || {}) ||
@@ -299,6 +301,7 @@ function normalizePaper(input = {}, existing = {}) {
     status,
     priority,
     bucketId: String(input.bucketId || existing.bucketId || 'general'),
+    readTab: normalizeReadTab(input.readTab || existing.readTab),
     deadline: coalesceText(input.deadline, existing.deadline, ''),
     rating: Number.isFinite(rating) ? Math.max(0, Math.min(5, rating)) : 0,
     localPath: coalesceText(input.localPath, existing.localPath, ''),
@@ -313,6 +316,10 @@ function normalizePaper(input = {}, existing = {}) {
     lastOpenedAt: existing.lastOpenedAt || input.lastOpenedAt || '',
     finishedAt: status === 'read' ? existing.finishedAt || now : ''
   };
+}
+
+function normalizeReadTab(value) {
+  return READ_TABS.has(value) ? value : 'general';
 }
 
 function normalizeCreates(input = {}, existing = {}) {
