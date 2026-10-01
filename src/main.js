@@ -10,6 +10,7 @@ const execFileAsync = promisify(execFile);
 
 const STATUSES = new Set(['to-read', 'reading', 'read']);
 const PRIORITIES = new Set(['normal', 'high']);
+const CREATES_FIELDS = ['claim', 'reasoning', 'evidence', 'assumptions', 'threats', 'extensions'];
 const BINDER_COLORS = [
   '#46385f',
   '#275f9b',
@@ -177,6 +178,7 @@ async function ensureStore() {
         normalized.bucketId !== paper.bucketId ||
         normalized.institutions !== paper.institutions ||
         normalized.abstract !== paper.abstract ||
+        JSON.stringify(normalized.creates) !== JSON.stringify(paper.creates || {}) ||
         normalized.pageSnapshotPath !== paper.pageSnapshotPath ||
         normalized.thumbnailPath !== paper.thumbnailPath ||
         !Array.isArray(paper.tags)
@@ -305,11 +307,26 @@ function normalizePaper(input = {}, existing = {}) {
     sourceFilename: coalesceText(input.sourceFilename, existing.sourceFilename, ''),
     abstract: input.abstract === undefined ? coalesceText(existing.abstract, '') : String(input.abstract || '').trim(),
     notes: input.notes === undefined ? String(existing.notes || '') : String(input.notes || ''),
+    creates: normalizeCreates(input.creates, existing.creates),
     addedAt: existing.addedAt || input.addedAt || now,
     updatedAt: now,
     lastOpenedAt: existing.lastOpenedAt || input.lastOpenedAt || '',
     finishedAt: status === 'read' ? existing.finishedAt || now : ''
   };
+}
+
+function normalizeCreates(input = {}, existing = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const previous = existing && typeof existing === 'object' ? existing : {};
+  const creates = {
+    enabled: source.enabled === undefined ? Boolean(previous.enabled) : Boolean(source.enabled)
+  };
+
+  for (const field of CREATES_FIELDS) {
+    creates[field] = source[field] === undefined ? String(previous[field] || '') : String(source[field] || '');
+  }
+
+  return creates;
 }
 
 function coalesceText(...values) {

@@ -5,6 +5,38 @@ const statusLabels = {
 };
 
 const statusOrder = ['to-read', 'reading', 'read'];
+const createsFields = [
+  {
+    id: 'claim',
+    label: 'Claim',
+    prompt: 'What is the paper saying or arguing?'
+  },
+  {
+    id: 'reasoning',
+    label: 'Reasoning',
+    prompt: 'Why do the authors think this is true?'
+  },
+  {
+    id: 'evidence',
+    label: 'Evidence',
+    prompt: 'What data, proof, evaluation, or examples support it?'
+  },
+  {
+    id: 'assumptions',
+    label: 'Assumptions',
+    prompt: 'What has to be true for this to hold?'
+  },
+  {
+    id: 'threats',
+    label: 'Threats',
+    prompt: 'What could break the claim or limit it?'
+  },
+  {
+    id: 'extensions',
+    label: 'Extensions',
+    prompt: 'What could I build, test, compare, or ask next?'
+  }
+];
 const priorityScore = { high: 2, normal: 1 };
 const defaultBucketId = 'general';
 const binderColors = [
@@ -143,7 +175,8 @@ function getVisiblePapers() {
 
   return sortPapers(state.papers).filter((paper) => {
     const matchesBucket = state.selectedBucketId === 'library' || paper.bucketId === state.selectedBucketId;
-    const haystack = [paper.title, paper.authors, paper.institutions, paper.venue, paper.year, paper.abstract, paper.tags.join(' ')]
+    const createsText = createsFields.map((field) => paper.creates?.[field.id] || '').join(' ');
+    const haystack = [paper.title, paper.authors, paper.institutions, paper.venue, paper.year, paper.abstract, paper.notes, createsText, paper.tags.join(' ')]
       .join(' ')
       .toLowerCase();
 
@@ -430,11 +463,26 @@ function normalizePaper(input = {}, existing = {}) {
     thumbnailPath: String(input.thumbnailPath || existing.thumbnailPath || '').trim(),
     abstract: input.abstract === undefined ? String(existing.abstract || '').trim() : String(input.abstract || '').trim(),
     notes: String(input.notes || existing.notes || ''),
+    creates: normalizeCreates(input.creates, existing.creates),
     addedAt: existing.addedAt || input.addedAt || now,
     updatedAt: now,
     lastOpenedAt: existing.lastOpenedAt || input.lastOpenedAt || '',
     finishedAt: status === 'read' ? existing.finishedAt || now : ''
   };
+}
+
+function normalizeCreates(input = {}, existing = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const previous = existing && typeof existing === 'object' ? existing : {};
+  const creates = {
+    enabled: source.enabled === undefined ? Boolean(previous.enabled) : Boolean(source.enabled)
+  };
+
+  for (const field of createsFields) {
+    creates[field.id] = source[field.id] === undefined ? String(previous[field.id] || '') : String(source[field.id] || '');
+  }
+
+  return creates;
 }
 
 function normalizePriority(priority) {
@@ -1035,6 +1083,53 @@ function renderPaperCard(paper) {
   `;
 }
 
+function renderNotesEditor(paper) {
+  const creates = normalizeCreates(paper.creates);
+
+  if (creates.enabled) {
+    return `
+      <section class="creates-panel">
+        <label class="creates-toggle">
+          <input type="checkbox" data-creates-toggle checked>
+          <span>
+            <strong>Use CREATEs framework</strong>
+            <small>Structured review notes instead of the empty notes box.</small>
+          </span>
+        </label>
+        <div class="creates-grid">
+          ${createsFields
+            .map(
+              (field) => `
+                <label class="field creates-field">
+                  <span>${escapeHtml(field.label)}</span>
+                  <small>${escapeHtml(field.prompt)}</small>
+                  <textarea data-creates-field="${escapeHtml(field.id)}" placeholder="${escapeHtml(field.prompt)}">${escapeHtml(creates[field.id])}</textarea>
+                </label>
+              `
+            )
+            .join('')}
+        </div>
+      </section>
+    `;
+  }
+
+  return `
+    <section class="creates-panel">
+      <label class="creates-toggle">
+        <input type="checkbox" data-creates-toggle>
+        <span>
+          <strong>Use CREATEs framework</strong>
+          <small>Swap the empty notes box for guided review fields.</small>
+        </span>
+      </label>
+      <label class="field notes-field">
+        Notes
+        <textarea data-field="notes" placeholder="Notes, review snippets, citation thoughts">${escapeHtml(paper.notes)}</textarea>
+      </label>
+    </section>
+  `;
+}
+
 function renderInspector() {
   const paper = getSelectedPaper();
 
@@ -1074,10 +1169,7 @@ function renderInspector() {
         <span class="pdf-preview-open">Open PDF</span>
       </button>
 
-      <label class="field notes-field">
-        Notes
-        <textarea data-field="notes" placeholder="Notes, review snippets, citation thoughts">${escapeHtml(paper.notes)}</textarea>
-      </label>
+      ${renderNotesEditor(paper)}
 
       <div class="control-row">
         <label>
@@ -1406,6 +1498,16 @@ function bindEvents() {
     field.addEventListener('blur', () => saveSelectedField(field));
   });
 
+  document.querySelector('[data-creates-toggle]')?.addEventListener('change', (event) => {
+    saveCreatesToggle(event.currentTarget.checked);
+  });
+
+  document.querySelectorAll('[data-creates-field]').forEach((field) => {
+    field.addEventListener('keydown', (event) => saveCreatesFieldFromKeyboard(event, field));
+    field.addEventListener('change', () => saveCreatesField(field));
+    field.addEventListener('blur', () => saveCreatesField(field));
+  });
+
   document.querySelectorAll('[data-preview-image]').forEach((image) => {
     image.addEventListener('error', () => {
       const preview = image.closest('.pdf-preview-action, .paper-page-preview, .inline-page-preview');
@@ -1501,6 +1603,46 @@ async function saveSelectedField(field) {
   }
 
   await updatePaperById(paper.id, patch);
+}
+
+function saveCreatesFieldFromKeyboard(event, field) {
+  if (event.key !== 'Enter' || (!event.metaKey && !event.ctrlKey)) {
+    return;
+  }
+
+  event.preventDefault();
+  saveCreatesField(field);
+}
+
+async function saveCreatesToggle(enabled) {
+  const paper = getSelectedPaper();
+  if (!paper) {
+    return;
+  }
+
+  await updatePaperById(paper.id, {
+    creates: {
+      ...normalizeCreates(paper.creates),
+      enabled
+    }
+  });
+}
+
+async function saveCreatesField(field) {
+  const paper = getSelectedPaper();
+  const fieldName = field.dataset.createsField;
+
+  if (!paper || !createsFields.some((item) => item.id === fieldName)) {
+    return;
+  }
+
+  await updatePaperById(paper.id, {
+    creates: {
+      ...normalizeCreates(paper.creates),
+      enabled: true,
+      [fieldName]: field.value
+    }
+  });
 }
 
 async function updatePaperById(id, patch, options = {}) {

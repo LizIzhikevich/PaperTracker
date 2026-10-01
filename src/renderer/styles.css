@@ -1395,6 +1395,58 @@ button:disabled {
   min-height: 180px;
 }
 
+.creates-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.creates-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.creates-toggle input {
+  margin-top: 3px;
+  accent-color: var(--ink-soft);
+}
+
+.creates-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.creates-toggle strong {
+  font-weight: 500;
+  color: var(--ink);
+}
+
+.creates-toggle small,
+.creates-field small {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.creates-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.creates-field {
+  gap: 6px;
+}
+
+.creates-field textarea {
+  min-height: 108px;
+  resize: vertical;
+}
+
 .inspector-footer {
   display: grid;
   margin-top: auto;
