@@ -1,6 +1,6 @@
 {
   "name": "paper-tracker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A local-first desktop paper workflow tracker for macOS and Windows.",
   "main": "src/main.js",
   "private": true,
@@ -70,7 +70,7 @@
         "provider": "github",
         "owner": "LizIzhikevich",
         "repo": "PaperTracker",
-        "releaseType": "draft"
+        "releaseType": "release"
       }
     ]
   }
