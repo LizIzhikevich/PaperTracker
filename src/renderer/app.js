@@ -1086,46 +1086,38 @@ function renderPaperCard(paper) {
 function renderNotesEditor(paper) {
   const creates = normalizeCreates(paper.creates);
 
-  if (creates.enabled) {
-    return `
-      <section class="creates-panel">
-        <label class="creates-toggle">
-          <input type="checkbox" data-creates-toggle checked>
-          <span>
-            <strong>Use CREATEs framework</strong>
-            <small>Structured review notes instead of the empty notes box.</small>
-          </span>
-        </label>
-        <div class="creates-grid">
-          ${createsFields
-            .map(
-              (field) => `
-                <label class="field creates-field">
-                  <span>${escapeHtml(field.label)}</span>
-                  <small>${escapeHtml(field.prompt)}</small>
-                  <textarea data-creates-field="${escapeHtml(field.id)}" placeholder="${escapeHtml(field.prompt)}">${escapeHtml(creates[field.id])}</textarea>
-                </label>
-              `
-            )
-            .join('')}
-        </div>
-      </section>
-    `;
-  }
-
   return `
     <section class="creates-panel">
-      <label class="creates-toggle">
-        <input type="checkbox" data-creates-toggle>
-        <span>
-          <strong>Use CREATEs framework</strong>
-          <small>Swap the empty notes box for guided review fields.</small>
-        </span>
-      </label>
       <label class="field notes-field">
         Notes
         <textarea data-field="notes" placeholder="Notes, review snippets, citation thoughts">${escapeHtml(paper.notes)}</textarea>
       </label>
+      <label class="creates-toggle">
+        <input type="checkbox" data-creates-toggle ${creates.enabled ? 'checked' : ''}>
+        <span>
+          <strong>UCLA CREATEs</strong>
+          <small>Add guided review fields below.</small>
+        </span>
+      </label>
+      ${
+        creates.enabled
+          ? `
+            <div class="creates-grid">
+              ${createsFields
+                .map(
+                  (field) => `
+                    <label class="field creates-field">
+                      <span>${escapeHtml(field.label)}</span>
+                      <small>${escapeHtml(field.prompt)}</small>
+                      <textarea data-creates-field="${escapeHtml(field.id)}" placeholder="${escapeHtml(field.prompt)}">${escapeHtml(creates[field.id])}</textarea>
+                    </label>
+                  `
+                )
+                .join('')}
+            </div>
+          `
+          : ''
+      }
     </section>
   `;
 }
