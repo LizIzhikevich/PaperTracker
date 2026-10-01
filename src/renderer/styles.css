@@ -1401,33 +1401,24 @@ button:disabled {
 }
 
 .creates-toggle {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 8px;
-  align-items: start;
-  padding: 9px 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.48);
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  width: fit-content;
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1;
 }
 
 .creates-toggle input {
-  margin-top: 2px;
+  margin: 0;
   accent-color: var(--ink-soft);
 }
 
 .creates-toggle span {
-  display: grid;
-  gap: 3px;
+  white-space: nowrap;
 }
 
-.creates-toggle strong {
-  font-weight: 500;
-  color: var(--ink);
-  font-size: 0.88rem;
-}
-
-.creates-toggle small,
 .creates-field small {
   color: var(--muted);
   font-size: 0.78rem;

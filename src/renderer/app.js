@@ -1094,10 +1094,7 @@ function renderNotesEditor(paper) {
       </label>
       <label class="creates-toggle">
         <input type="checkbox" data-creates-toggle ${creates.enabled ? 'checked' : ''}>
-        <span>
-          <strong>UCLA CREATEs</strong>
-          <small>Add guided review fields below.</small>
-        </span>
+        <span>UCLA CREATEs</span>
       </label>
       ${
         creates.enabled
