@@ -33,6 +33,17 @@ const BINDER_COLORS = [
 
 let mainWindow;
 
+const APP_NAME = 'PaperTracker';
+const STABLE_USER_DATA_DIR_NAME = 'PaperTracker';
+const LEGACY_USER_DATA_DIR_NAMES = ['paper-tracker'];
+
+configureUserDataPath();
+
+function configureUserDataPath() {
+  app.setName(APP_NAME);
+  app.setPath('userData', path.join(app.getPath('appData'), STABLE_USER_DATA_DIR_NAME));
+}
+
 function getStorePaths() {
   const root = app.getPath('userData');
   return {
@@ -41,6 +52,45 @@ function getStorePaths() {
     papersDir: path.join(root, 'papers'),
     thumbnailsDir: path.join(root, 'thumbnails')
   };
+}
+
+async function pathExists(targetPath) {
+  try {
+    await fs.access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function migrateLegacyStoreIfNeeded() {
+  const { root, libraryFile } = getStorePaths();
+
+  await fs.mkdir(root, { recursive: true });
+
+  if (await pathExists(libraryFile)) {
+    return;
+  }
+
+  const appDataRoot = app.getPath('appData');
+
+  for (const legacyName of LEGACY_USER_DATA_DIR_NAMES) {
+    const legacyRoot = path.join(appDataRoot, legacyName);
+    const legacyLibraryFile = path.join(legacyRoot, 'library.json');
+
+    if (legacyRoot === root || !(await pathExists(legacyLibraryFile))) {
+      continue;
+    }
+
+    await fs.cp(legacyRoot, root, {
+      recursive: true,
+      force: false,
+      errorOnExist: false
+    });
+
+    await fs.writeFile(path.join(root, 'migrated-from.txt'), `${legacyRoot}\n`, 'utf8').catch(() => {});
+    return;
+  }
 }
 
 async function ensureStore() {
@@ -140,14 +190,53 @@ async function ensureStore() {
     if (changed) {
       await writeLibrary(library);
     }
-  } catch {
-    await writeLibrary({
-      schemaVersion: 1,
-      createdAt: new Date().toISOString(),
-      buckets: getStarterBuckets(),
-      papers: getStarterPapers()
-    });
+  } catch (error) {
+    await recoverOrCreateLibrary(error);
   }
+}
+
+async function recoverOrCreateLibrary(error) {
+  const { libraryFile } = getStorePaths();
+
+  if (error?.code === 'ENOENT') {
+    await writeLibrary(createStarterLibrary());
+    return;
+  }
+
+  const backupLibrary = await readBackupLibrary();
+
+  if (backupLibrary) {
+    await writeLibrary(backupLibrary);
+    return;
+  }
+
+  if (await pathExists(libraryFile)) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    await fs.copyFile(libraryFile, `${libraryFile}.corrupt-${timestamp}`).catch(() => {});
+  }
+
+  await writeLibrary(createStarterLibrary());
+}
+
+async function readBackupLibrary() {
+  const { libraryFile } = getStorePaths();
+
+  try {
+    const raw = await fs.readFile(`${libraryFile}.backup`, 'utf8');
+    const backup = JSON.parse(raw);
+    return backup && Array.isArray(backup.papers) && Array.isArray(backup.buckets) ? backup : null;
+  } catch {
+    return null;
+  }
+}
+
+function createStarterLibrary() {
+  return {
+    schemaVersion: 1,
+    createdAt: new Date().toISOString(),
+    buckets: getStarterBuckets(),
+    papers: getStarterPapers()
+  };
 }
 
 async function readLibrary() {
@@ -159,8 +248,17 @@ async function readLibrary() {
 
 async function writeLibrary(library) {
   const { libraryFile } = getStorePaths();
+  const tempFile = `${libraryFile}.${process.pid}.tmp`;
+  const backupFile = `${libraryFile}.backup`;
+
   await fs.mkdir(path.dirname(libraryFile), { recursive: true });
-  await fs.writeFile(libraryFile, `${JSON.stringify(library, null, 2)}\n`, 'utf8');
+
+  if (await pathExists(libraryFile)) {
+    await fs.copyFile(libraryFile, backupFile).catch(() => {});
+  }
+
+  await fs.writeFile(tempFile, `${JSON.stringify(library, null, 2)}\n`, 'utf8');
+  await fs.rename(tempFile, libraryFile);
 }
 
 function createId() {
@@ -1230,6 +1328,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  await migrateLegacyStoreIfNeeded();
   await ensureStore();
   createWindow();
 
