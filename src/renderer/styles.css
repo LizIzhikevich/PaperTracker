@@ -786,6 +786,14 @@ button:disabled {
   background: #eef2f6;
 }
 
+.read-tab-add {
+  min-width: 32px;
+  justify-content: center;
+  padding: 0 10px;
+  color: #526f96;
+  font-size: 16px;
+}
+
 .view-button {
   width: 42px;
   color: #9aa2aa;

@@ -11,7 +11,6 @@ const execFileAsync = promisify(execFile);
 const STATUSES = new Set(['to-read', 'reading', 'read']);
 const PRIORITIES = new Set(['normal', 'high']);
 const CREATES_FIELDS = ['claim', 'reasoning', 'evidence', 'assumptions', 'threats', 'extensions'];
-const READ_TABS = new Set(['general', 'background', 'methods', 'results', 'to-cite']);
 const BINDER_COLORS = [
   '#46385f',
   '#275f9b',
@@ -301,7 +300,7 @@ function normalizePaper(input = {}, existing = {}) {
     status,
     priority,
     bucketId: String(input.bucketId || existing.bucketId || 'general'),
-    readTab: normalizeReadTab(input.readTab || existing.readTab),
+    readTab: normalizeReadTab(input.readTab === undefined ? existing.readTab : input.readTab),
     deadline: coalesceText(input.deadline, existing.deadline, ''),
     rating: Number.isFinite(rating) ? Math.max(0, Math.min(5, rating)) : 0,
     localPath: coalesceText(input.localPath, existing.localPath, ''),
@@ -319,7 +318,8 @@ function normalizePaper(input = {}, existing = {}) {
 }
 
 function normalizeReadTab(value) {
-  return READ_TABS.has(value) ? value : 'general';
+  const text = String(value || '').trim();
+  return text ? slugify(text) : '';
 }
 
 function normalizeCreates(input = {}, existing = {}) {
@@ -376,8 +376,27 @@ function normalizeBucket(input = {}) {
     name: String(input.name || 'New Binder').trim(),
     category,
     color: normalizeColor(input.color) || getDefaultBinderColor(id),
+    readTabs: normalizeReadTabs(input.readTabs),
     createdAt: input.createdAt || now
   };
+}
+
+function normalizeReadTabs(tabs = []) {
+  const seen = new Set();
+  return (Array.isArray(tabs) ? tabs : [])
+    .map((tab) => {
+      const name = String(tab?.name || tab?.label || '').trim();
+      const id = name || tab?.id ? slugify(tab?.id || name) : '';
+      return { id, name: name || id };
+    })
+    .filter((tab) => {
+      if (!tab.id || seen.has(tab.id)) {
+        return false;
+      }
+
+      seen.add(tab.id);
+      return true;
+    });
 }
 
 function normalizeColor(value) {

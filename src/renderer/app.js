@@ -5,15 +5,7 @@ const statusLabels = {
 };
 
 const statusOrder = ['to-read', 'reading', 'read'];
-const readTabs = [
-  { id: 'all', label: 'All read' },
-  { id: 'general', label: 'General' },
-  { id: 'background', label: 'Background' },
-  { id: 'methods', label: 'Methods' },
-  { id: 'results', label: 'Results' },
-  { id: 'to-cite', label: 'To cite' }
-];
-const assignableReadTabs = readTabs.filter((tab) => tab.id !== 'all');
+const allReadTab = { id: 'all', label: 'All' };
 const createsFields = [
   {
     id: 'claim',
@@ -221,6 +213,10 @@ function getBucketCategory(bucket) {
   return bucket?.category === 'archived' ? 'archived' : 'active';
 }
 
+function getBucketReadTabs(bucket) {
+  return normalizeReadTabs(bucket?.readTabs);
+}
+
 function normalizeBucket(input = {}) {
   const now = new Date().toISOString();
   const id = input.id || slugify(input.name || 'binder');
@@ -230,8 +226,27 @@ function normalizeBucket(input = {}) {
     name: String(input.name || 'New Binder').trim(),
     category: getBucketCategory(input),
     color: normalizeColor(input.color) || getDefaultBinderColor(id),
+    readTabs: normalizeReadTabs(input.readTabs),
     createdAt: input.createdAt || now
   };
+}
+
+function normalizeReadTabs(tabs = []) {
+  const seen = new Set();
+  return (Array.isArray(tabs) ? tabs : [])
+    .map((tab) => {
+      const name = String(tab?.name || tab?.label || '').trim();
+      const id = name || tab?.id ? slugify(tab?.id || name) : '';
+      return { id, name: name || id };
+    })
+    .filter((tab) => {
+      if (!tab.id || seen.has(tab.id)) {
+        return false;
+      }
+
+      seen.add(tab.id);
+      return true;
+    });
 }
 
 function normalizeColor(value) {
@@ -466,7 +481,7 @@ function normalizePaper(input = {}, existing = {}) {
     status,
     priority,
     bucketId: String(input.bucketId || existing.bucketId || defaultBucketId),
-    readTab: normalizeReadTab(input.readTab || existing.readTab),
+    readTab: normalizeReadTab(input.readTab === undefined ? existing.readTab : input.readTab),
     deadline: String(input.deadline || existing.deadline || '').trim(),
     rating: Number.isFinite(rating) ? Math.max(0, Math.min(5, rating)) : 0,
     localPath: String(input.localPath || existing.localPath || '').trim(),
@@ -501,7 +516,8 @@ function normalizePriority(priority) {
 }
 
 function normalizeReadTab(value) {
-  return assignableReadTabs.some((tab) => tab.id === value) ? value : 'general';
+  const text = String(value || '').trim();
+  return text ? slugify(text) : '';
 }
 
 function createBrowserPaperApi() {
@@ -1030,7 +1046,8 @@ function renderBoard() {
   const color = getBinderColor(currentBucket.id);
   const papers = getVisiblePapers();
   const readPapers = papers.filter((paper) => paper.status === 'read');
-  const selectedReadTab = readTabs.some((tab) => tab.id === state.readTab) ? state.readTab : 'all';
+  const customReadTabs = getBucketReadTabs(currentBucket);
+  const selectedReadTab = state.readTab === allReadTab.id || customReadTabs.some((tab) => tab.id === state.readTab) ? state.readTab : allReadTab.id;
 
   return `
     <main class="workspace binder-workspace">
@@ -1053,7 +1070,7 @@ function renderBoard() {
           .map((status) => {
             const statusPapers = papers.filter((paper) => paper.status === status);
             const visiblePapers =
-              status === 'read' && selectedReadTab !== 'all' ? statusPapers.filter((paper) => normalizeReadTab(paper.readTab) === selectedReadTab) : statusPapers;
+              status === 'read' && selectedReadTab !== allReadTab.id ? statusPapers.filter((paper) => normalizeReadTab(paper.readTab) === selectedReadTab) : statusPapers;
             return renderColumn(status, visiblePapers);
           })
           .join('')}
@@ -1063,11 +1080,16 @@ function renderBoard() {
 }
 
 function renderReadTabs(readPapers, selectedReadTab) {
+  const currentBucket = getCurrentBucket();
+  const customTabs = getBucketReadTabs(currentBucket);
+  const tabs = [allReadTab, ...customTabs.map((tab) => ({ id: tab.id, label: tab.name }))];
   const counts = readPapers.reduce(
     (acc, paper) => {
       const tab = normalizeReadTab(paper.readTab);
       acc.all += 1;
-      acc[tab] = (acc[tab] || 0) + 1;
+      if (customTabs.some((item) => item.id === tab)) {
+        acc[tab] = (acc[tab] || 0) + 1;
+      }
       return acc;
     },
     { all: 0 }
@@ -1075,7 +1097,7 @@ function renderReadTabs(readPapers, selectedReadTab) {
 
   return `
     <nav class="read-tabs" aria-label="Read paper tabs">
-      ${readTabs
+      ${tabs
         .map(
           (tab) => `
             <button class="read-tab ${selectedReadTab === tab.id ? 'is-active' : ''}" data-read-tab="${escapeHtml(tab.id)}" type="button">
@@ -1085,6 +1107,7 @@ function renderReadTabs(readPapers, selectedReadTab) {
           `
         )
         .join('')}
+      <button class="read-tab read-tab-add" data-action="new-read-tab" type="button" title="Add topic tab">+</button>
     </nav>
   `;
 }
@@ -1173,6 +1196,24 @@ function renderNotesEditor(paper) {
   `;
 }
 
+function renderReadTabField(paper) {
+  const bucket = state.buckets.find((item) => item.id === paper.bucketId);
+  const tabs = getBucketReadTabs(bucket);
+  const selectedTab = normalizeReadTab(paper.readTab);
+
+  return `
+    <label class="field">
+      Read topic
+      <select data-field="readTab">
+        <option value="" ${selectedTab ? '' : 'selected'}>${tabs.length ? 'No topic' : 'No topics yet'}</option>
+        ${tabs
+          .map((tab) => `<option value="${escapeHtml(tab.id)}" ${selectedTab === tab.id ? 'selected' : ''}>${escapeHtml(tab.name)}</option>`)
+          .join('')}
+      </select>
+    </label>
+  `;
+}
+
 function renderInspector() {
   const paper = getSelectedPaper();
 
@@ -1233,14 +1274,7 @@ function renderInspector() {
         </label>
       </div>
 
-      <label class="field">
-        Read tab
-        <select data-field="readTab">
-          ${assignableReadTabs
-            .map((tab) => `<option value="${escapeHtml(tab.id)}" ${normalizeReadTab(paper.readTab) === tab.id ? 'selected' : ''}>${escapeHtml(tab.label)}</option>`)
-            .join('')}
-        </select>
-      </label>
+      ${renderReadTabField(paper)}
 
       <label class="field">
         Title
@@ -1368,6 +1402,7 @@ function bindEvents() {
     button.addEventListener('click', () => {
       state.selectedBucketId = button.dataset.bucketId;
       state.selectedId = '';
+      state.readTab = allReadTab.id;
       state.contextMenu = null;
       render();
     });
@@ -1390,10 +1425,14 @@ function bindEvents() {
 
   document.querySelectorAll('[data-read-tab]').forEach((button) => {
     button.addEventListener('click', () => {
-      state.readTab = readTabs.some((tab) => tab.id === button.dataset.readTab) ? button.dataset.readTab : 'all';
+      const currentBucket = getCurrentBucket();
+      const tabs = getBucketReadTabs(currentBucket);
+      state.readTab = button.dataset.readTab === allReadTab.id || tabs.some((tab) => tab.id === button.dataset.readTab) ? button.dataset.readTab : allReadTab.id;
       render();
     });
   });
+
+  document.querySelector('[data-action="new-read-tab"]')?.addEventListener('click', createReadTab);
 
   document.querySelectorAll('[data-binder-id]').forEach((button) => {
     button.addEventListener('contextmenu', (event) => {
@@ -1543,7 +1582,7 @@ function bindEvents() {
 
       const patch = { status: column.dataset.dropStatus };
 
-      if (column.dataset.dropStatus === 'read' && state.readTab !== 'all') {
+      if (column.dataset.dropStatus === 'read' && state.readTab !== allReadTab.id) {
         patch.readTab = normalizeReadTab(state.readTab);
       }
 
@@ -1777,6 +1816,38 @@ async function renameBinderFromForm(event) {
   state.buckets = state.buckets.map((bucket) => (bucket.id === updated.id ? updated : bucket));
   state.selectedBucketId = state.selectedBucketId === bucketId ? updated.id : state.selectedBucketId;
   state.renamingBucketId = '';
+  render();
+}
+
+async function createReadTab() {
+  const bucket = getCurrentBucket();
+
+  if (!bucket || bucket.id === 'library') {
+    return;
+  }
+
+  const name = window.prompt('Name this read topic');
+  const cleanName = String(name || '').trim();
+
+  if (!cleanName) {
+    return;
+  }
+
+  const existingTabs = getBucketReadTabs(bucket);
+  const existingIds = new Set(existingTabs.map((tab) => tab.id));
+  const baseId = slugify(cleanName);
+  let id = baseId;
+  let suffix = 2;
+
+  while (existingIds.has(id)) {
+    id = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+
+  const readTabs = [...existingTabs, { id, name: cleanName }];
+  const updated = await paperApi.updateBucket(bucket.id, { readTabs });
+  state.buckets = state.buckets.map((item) => (item.id === updated.id ? updated : item));
+  state.readTab = id;
   render();
 }
 
