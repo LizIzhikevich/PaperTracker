@@ -12,5 +12,8 @@ contextBridge.exposeInMainWorld('paperTracker', {
   updateBucket: (id, patch) => ipcRenderer.invoke('bucket:update', id, patch),
   reorderBuckets: (orderedIds) => ipcRenderer.invoke('bucket:reorder', orderedIds),
   deleteBucket: (id) => ipcRenderer.invoke('bucket:delete', id),
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
+  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+  openUpdateUrl: (url) => ipcRenderer.invoke('app:openUpdateUrl', url),
   getFilePath: (file) => webUtils.getPathForFile(file)
 });

@@ -37,6 +37,8 @@ let mainWindow;
 const APP_NAME = 'PaperTracker';
 const STABLE_USER_DATA_DIR_NAME = 'PaperTracker';
 const LEGACY_USER_DATA_DIR_NAMES = ['paper-tracker'];
+const RELEASES_API_URL = 'https://api.github.com/repos/LizIzhikevich/PaperTracker/releases/latest';
+const RELEASES_PAGE_URL = 'https://github.com/LizIzhikevich/PaperTracker/releases/latest';
 
 configureUserDataPath();
 
@@ -397,6 +399,71 @@ function normalizeReadTabs(tabs = []) {
       seen.add(tab.id);
       return true;
     });
+}
+
+function normalizeVersion(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^v/i, '')
+    .split(/[+-]/)[0];
+}
+
+function compareVersions(left, right) {
+  const leftParts = normalizeVersion(left).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const rightParts = normalizeVersion(right).split('.').map((part) => Number.parseInt(part, 10) || 0);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const diff = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (diff !== 0) {
+      return diff > 0 ? 1 : -1;
+    }
+  }
+
+  return 0;
+}
+
+function getPreferredReleaseAsset(release) {
+  const assets = Array.isArray(release?.assets) ? release.assets : [];
+  const platform = process.platform;
+
+  if (platform === 'darwin') {
+    return assets.find((asset) => /\.dmg$/i.test(asset.name)) || assets.find((asset) => /mac.*\.zip$/i.test(asset.name));
+  }
+
+  if (platform === 'win32') {
+    return assets.find((asset) => /\.exe$/i.test(asset.name));
+  }
+
+  return null;
+}
+
+async function checkForUpdates() {
+  const currentVersion = app.getVersion();
+  const response = await fetch(RELEASES_API_URL, {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      'User-Agent': `${APP_NAME}/${currentVersion}`
+    }
+  });
+
+  if (!response.ok) {
+    throw new Error(`GitHub returned ${response.status}`);
+  }
+
+  const release = await response.json();
+  const latestVersion = normalizeVersion(release.tag_name || release.name);
+  const asset = getPreferredReleaseAsset(release);
+  const hasUpdate = latestVersion ? compareVersions(latestVersion, currentVersion) > 0 : false;
+
+  return {
+    currentVersion,
+    latestVersion,
+    hasUpdate,
+    releaseUrl: release.html_url || RELEASES_PAGE_URL,
+    downloadUrl: asset?.browser_download_url || release.html_url || RELEASES_PAGE_URL,
+    assetName: asset?.name || ''
+  };
 }
 
 function normalizeColor(value) {
@@ -1571,5 +1638,20 @@ ipcMain.handle('paper:openPdf', async (_event, id) => {
   paper.updatedAt = paper.lastOpenedAt;
   await writeLibrary(library);
 
+  return { opened: true };
+});
+
+ipcMain.handle('app:getVersion', async () => {
+  return app.getVersion();
+});
+
+ipcMain.handle('app:checkForUpdates', async () => {
+  return checkForUpdates();
+});
+
+ipcMain.handle('app:openUpdateUrl', async (_event, url) => {
+  const target = String(url || RELEASES_PAGE_URL);
+  const safeUrl = target.startsWith('https://github.com/LizIzhikevich/PaperTracker/releases') ? target : RELEASES_PAGE_URL;
+  await shell.openExternal(safeUrl);
   return { opened: true };
 });

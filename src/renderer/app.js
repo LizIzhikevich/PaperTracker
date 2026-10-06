@@ -73,7 +73,18 @@ const state = {
   contextMenu: null,
   isCreatingBinder: false,
   renamingBucketId: '',
-  coloringBucketId: ''
+  coloringBucketId: '',
+  updateStatus: {
+    currentVersion: '',
+    latestVersion: '',
+    hasUpdate: false,
+    checking: false,
+    checked: false,
+    error: '',
+    releaseUrl: '',
+    downloadUrl: '',
+    assetName: ''
+  }
 };
 
 const app = document.querySelector('#app');
@@ -699,6 +710,24 @@ function createBrowserPaperApi() {
       library.buckets = remainingBuckets;
       writeLibrary(library);
       return { deleted: true, fallbackBucketId, papersMoved, buckets: library.buckets, papers: library.papers };
+    },
+    async getAppVersion() {
+      return 'browser-preview';
+    },
+    async checkForUpdates() {
+      return {
+        currentVersion: 'browser-preview',
+        latestVersion: '',
+        hasUpdate: false,
+        releaseUrl: 'https://github.com/LizIzhikevich/PaperTracker/releases/latest',
+        downloadUrl: 'https://github.com/LizIzhikevich/PaperTracker/releases/latest',
+        assetName: '',
+        browserPreview: true
+      };
+    },
+    async openUpdateUrl(url) {
+      window.open(url || 'https://github.com/LizIzhikevich/PaperTracker/releases/latest', '_blank', 'noopener');
+      return { opened: true };
     }
   };
 }
@@ -788,7 +817,38 @@ function renderSidebar() {
           <span>Aug</span>
         </div>
       </section>
+      ${renderUpdatePanel()}
     </aside>
+  `;
+}
+
+function renderUpdatePanel() {
+  const update = state.updateStatus;
+  const versionLabel = update.currentVersion ? `v${escapeHtml(update.currentVersion)}` : '';
+  const message = update.error
+    ? update.error
+    : update.hasUpdate
+      ? `v${escapeHtml(update.latestVersion)} is available`
+      : update.checked
+        ? 'You are up to date'
+        : 'Check GitHub for a newer version';
+
+  return `
+    <section class="update-panel">
+      <div class="update-copy">
+        <span>App updates</span>
+        <small>${versionLabel ? `Current ${versionLabel}` : 'Current version loading'}</small>
+      </div>
+      <div class="update-actions">
+        <button data-action="check-updates" ${update.checking ? 'disabled' : ''}>${update.checking ? 'Checking...' : 'Check'}</button>
+        ${
+          update.hasUpdate
+            ? `<button class="primary-update" data-action="open-update">${update.assetName ? 'Download' : 'Open'}</button>`
+            : ''
+        }
+      </div>
+      <p class="${update.error ? 'is-error' : ''}">${message}</p>
+    </section>
   `;
 }
 
@@ -1681,6 +1741,8 @@ function bindEvents() {
     render();
   });
   document.querySelector('[data-action="delete"]')?.addEventListener('click', deleteSelectedPaper);
+  document.querySelector('[data-action="check-updates"]')?.addEventListener('click', checkForAppUpdates);
+  document.querySelector('[data-action="open-update"]')?.addEventListener('click', openUpdateDownload);
 }
 
 function saveFieldFromKeyboard(event, field) {
@@ -1756,6 +1818,45 @@ async function updatePaperById(id, patch, options = {}) {
   state.papers = state.papers.map((item) => (item.id === updated.id ? updated : item));
   state.selectedId = options.keepSelection === false ? '' : updated.id;
   render();
+}
+
+async function checkForAppUpdates() {
+  state.updateStatus = {
+    ...state.updateStatus,
+    checking: true,
+    checked: false,
+    error: ''
+  };
+  render();
+
+  try {
+    const result = await paperApi.checkForUpdates();
+    state.updateStatus = {
+      ...state.updateStatus,
+      ...result,
+      checking: false,
+      checked: true,
+      error: result.browserPreview ? 'Open the desktop app to check updates.' : ''
+    };
+  } catch (error) {
+    state.updateStatus = {
+      ...state.updateStatus,
+      checking: false,
+      checked: true,
+      error: `Could not check updates: ${error.message || error}`
+    };
+  }
+
+  render();
+}
+
+async function openUpdateDownload() {
+  const target = state.updateStatus.downloadUrl || state.updateStatus.releaseUrl;
+  if (!target) {
+    return;
+  }
+
+  await paperApi.openUpdateUrl(target);
 }
 
 async function importPdf() {
@@ -2015,6 +2116,14 @@ async function deleteSelectedPaper() {
 }
 
 async function boot() {
+  try {
+    if (paperApi.getAppVersion) {
+      state.updateStatus.currentVersion = await paperApi.getAppVersion();
+    }
+  } catch (error) {
+    state.updateStatus.currentVersion = '';
+  }
+
   const library = await paperApi.getLibrary();
   state.buckets = (library.buckets || getStarterBuckets()).map(normalizeBucket);
   state.papers = (library.papers || []).map((paper) =>
