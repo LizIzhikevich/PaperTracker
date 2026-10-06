@@ -763,6 +763,7 @@ function renderSidebar() {
       <div class="brand-row">
         <span>Paper Tracker</span>
       </div>
+      ${renderUpdatePanel()}
 
       <label class="search-box">
         <span>Search</span>
@@ -817,7 +818,6 @@ function renderSidebar() {
           <span>Aug</span>
         </div>
       </section>
-      ${renderUpdatePanel()}
     </aside>
   `;
 }
