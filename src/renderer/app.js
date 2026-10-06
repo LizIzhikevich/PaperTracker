@@ -763,7 +763,6 @@ function renderSidebar() {
       <div class="brand-row">
         <span>Paper Tracker</span>
       </div>
-      ${renderUpdatePanel()}
 
       <label class="search-box">
         <span>Search</span>
@@ -818,26 +817,27 @@ function renderSidebar() {
           <span>Aug</span>
         </div>
       </section>
+      ${renderUpdatePanel()}
     </aside>
   `;
 }
 
 function renderUpdatePanel() {
   const update = state.updateStatus;
-  const versionLabel = update.currentVersion ? `v${escapeHtml(update.currentVersion)}` : '';
-  const message = update.error
+  const versionLabel = update.currentVersion ? `v${escapeHtml(update.currentVersion)}` : 'Version';
+  const status = update.error
     ? update.error
     : update.hasUpdate
       ? `v${escapeHtml(update.latestVersion)} is available`
       : update.checked
-        ? 'You are up to date'
-        : 'Check GitHub for a newer version';
+        ? 'Up to date'
+        : '';
 
   return `
     <section class="update-panel">
       <div class="update-copy">
-        <span>App updates</span>
-        <small>${versionLabel ? `Current ${versionLabel}` : 'Current version loading'}</small>
+        <span>Updates</span>
+        <small>${versionLabel}</small>
       </div>
       <div class="update-actions">
         <button data-action="check-updates" ${update.checking ? 'disabled' : ''}>${update.checking ? 'Checking...' : 'Check'}</button>
@@ -847,7 +847,7 @@ function renderUpdatePanel() {
             : ''
         }
       </div>
-      <p class="${update.error ? 'is-error' : ''}">${message}</p>
+      ${status ? `<p class="${update.error ? 'is-error' : ''}">${status}</p>` : ''}
     </section>
   `;
 }

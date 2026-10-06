@@ -684,44 +684,47 @@ button:disabled {
 }
 
 .update-panel {
-  display: grid;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: rgba(255, 255, 255, 0.44);
+  min-height: 32px;
+  padding: 4px 2px;
+  color: var(--faint);
 }
 
 .update-copy {
-  display: grid;
-  gap: 2px;
-  color: #5b6570;
-  font-size: 13px;
-  font-weight: 520;
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .update-copy small,
 .update-panel p {
   margin: 0;
   color: var(--faint);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 400;
-  line-height: 1.35;
+  line-height: 1.2;
 }
 
 .update-actions {
   display: flex;
+  margin-left: auto;
   gap: 6px;
 }
 
 .update-actions button {
-  min-height: 28px;
-  padding: 0 10px;
+  min-height: 24px;
+  padding: 0 8px;
   border: 1px solid var(--line);
-  border-radius: 7px;
-  color: #4f5964;
-  background: #fbfcfd;
-  font-size: 12px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 11px;
 }
 
 .update-actions button:hover:not(:disabled) {
