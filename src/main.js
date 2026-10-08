@@ -39,6 +39,9 @@ const STABLE_USER_DATA_DIR_NAME = 'PaperTracker';
 const LEGACY_USER_DATA_DIR_NAMES = ['paper-tracker'];
 const RELEASES_API_URL = 'https://api.github.com/repos/LizIzhikevich/PaperTracker/releases/latest';
 const RELEASES_PAGE_URL = 'https://github.com/LizIzhikevich/PaperTracker/releases/latest';
+const CROSSREF_WORKS_API_URL = 'https://api.crossref.org/works/';
+const MAX_REMOTE_PDF_BYTES = 75 * 1024 * 1024;
+const LIBRARY_BACKUP_LIMIT = 12;
 
 configureUserDataPath();
 
@@ -53,7 +56,8 @@ function getStorePaths() {
     root,
     libraryFile: path.join(root, 'library.json'),
     papersDir: path.join(root, 'papers'),
-    thumbnailsDir: path.join(root, 'thumbnails')
+    thumbnailsDir: path.join(root, 'thumbnails'),
+    backupsDir: path.join(root, 'backups')
   };
 }
 
@@ -97,9 +101,10 @@ async function migrateLegacyStoreIfNeeded() {
 }
 
 async function ensureStore() {
-  const { libraryFile, papersDir, thumbnailsDir } = getStorePaths();
+  const { libraryFile, papersDir, thumbnailsDir, backupsDir } = getStorePaths();
   await fs.mkdir(papersDir, { recursive: true });
   await fs.mkdir(thumbnailsDir, { recursive: true });
+  await fs.mkdir(backupsDir, { recursive: true });
 
   try {
     const raw = await fs.readFile(libraryFile, 'utf8');
@@ -184,6 +189,8 @@ async function ensureStore() {
         JSON.stringify(normalized.creates) !== JSON.stringify(paper.creates || {}) ||
         normalized.pageSnapshotPath !== paper.pageSnapshotPath ||
         normalized.thumbnailPath !== paper.thumbnailPath ||
+        normalized.doi !== paper.doi ||
+        normalized.sourceUrl !== paper.sourceUrl ||
         !Array.isArray(paper.tags)
       ) {
         changed = true;
@@ -211,28 +218,58 @@ async function recoverOrCreateLibrary(error) {
   const backupLibrary = await readBackupLibrary();
 
   if (backupLibrary) {
+    await archiveCorruptLibrary(libraryFile);
     await writeLibrary(backupLibrary);
     return;
   }
 
   if (await pathExists(libraryFile)) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    await fs.copyFile(libraryFile, `${libraryFile}.corrupt-${timestamp}`).catch(() => {});
+    await archiveCorruptLibrary(libraryFile);
   }
 
   await writeLibrary(createStarterLibrary());
 }
 
+async function archiveCorruptLibrary(libraryFile) {
+  if (!(await pathExists(libraryFile))) {
+    return;
+  }
+
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  await fs.copyFile(libraryFile, `${libraryFile}.corrupt-${timestamp}`).catch(() => {});
+  await fs.unlink(libraryFile).catch(() => {});
+}
+
 async function readBackupLibrary() {
-  const { libraryFile } = getStorePaths();
+  const { libraryFile, backupsDir } = getStorePaths();
+  const candidates = [`${libraryFile}.backup`];
 
   try {
-    const raw = await fs.readFile(`${libraryFile}.backup`, 'utf8');
-    const backup = JSON.parse(raw);
-    return backup && Array.isArray(backup.papers) && Array.isArray(backup.buckets) ? backup : null;
+    const backups = await fs.readdir(backupsDir);
+    candidates.push(
+      ...backups
+        .filter((name) => /^library-\d{4}-\d{2}-\d{2}T/.test(name) && name.endsWith('.json'))
+        .sort()
+        .reverse()
+        .map((name) => path.join(backupsDir, name))
+    );
   } catch {
-    return null;
+    // Older installs may not have rolling backups yet.
   }
+
+  for (const candidate of candidates) {
+    try {
+      const raw = await fs.readFile(candidate, 'utf8');
+      const backup = JSON.parse(raw);
+      if (backup && Array.isArray(backup.papers) && Array.isArray(backup.buckets)) {
+        return backup;
+      }
+    } catch {
+      // Try the next backup candidate.
+    }
+  }
+
+  return null;
 }
 
 function createStarterLibrary() {
@@ -254,16 +291,93 @@ async function readLibrary() {
 async function writeLibrary(library) {
   const { libraryFile } = getStorePaths();
   const tempFile = `${libraryFile}.${process.pid}.tmp`;
-  const backupFile = `${libraryFile}.backup`;
+  const payload = `${JSON.stringify(assertWritableLibrary(library), null, 2)}\n`;
 
   await fs.mkdir(path.dirname(libraryFile), { recursive: true });
+  JSON.parse(payload);
 
-  if (await pathExists(libraryFile)) {
-    await fs.copyFile(libraryFile, backupFile).catch(() => {});
+  try {
+    await createLibraryBackup();
+    await writeFileDurably(tempFile, payload);
+    await fs.rename(tempFile, libraryFile);
+    await fsyncDirectory(path.dirname(libraryFile));
+    await pruneLibraryBackups();
+  } catch (error) {
+    await fs.unlink(tempFile).catch(() => {});
+    throw error;
+  }
+}
+
+function assertWritableLibrary(library) {
+  if (!library || typeof library !== 'object') {
+    throw new Error('Cannot save invalid library data.');
   }
 
-  await fs.writeFile(tempFile, `${JSON.stringify(library, null, 2)}\n`, 'utf8');
-  await fs.rename(tempFile, libraryFile);
+  if (!Array.isArray(library.buckets) || !Array.isArray(library.papers)) {
+    throw new Error('Cannot save library without binders and papers.');
+  }
+
+  return {
+    ...library,
+    schemaVersion: library.schemaVersion || 1,
+    updatedAt: new Date().toISOString()
+  };
+}
+
+async function createLibraryBackup() {
+  const { libraryFile, backupsDir } = getStorePaths();
+
+  if (!(await pathExists(libraryFile))) {
+    return;
+  }
+
+  await fs.mkdir(backupsDir, { recursive: true });
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  await fs.copyFile(libraryFile, `${libraryFile}.backup`).catch(() => {});
+  await fs.copyFile(libraryFile, path.join(backupsDir, `library-${timestamp}.json`)).catch(() => {});
+}
+
+async function pruneLibraryBackups() {
+  const { backupsDir } = getStorePaths();
+  let backups = [];
+
+  try {
+    backups = (await fs.readdir(backupsDir))
+      .filter((name) => /^library-\d{4}-\d{2}-\d{2}T/.test(name) && name.endsWith('.json'))
+      .sort()
+      .reverse();
+  } catch {
+    return;
+  }
+
+  await Promise.all(backups.slice(LIBRARY_BACKUP_LIMIT).map((name) => fs.unlink(path.join(backupsDir, name)).catch(() => {})));
+}
+
+async function writeFileDurably(filePath, contents) {
+  const handle = await fs.open(filePath, 'w');
+
+  try {
+    await handle.writeFile(contents, 'utf8');
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function fsyncDirectory(directoryPath) {
+  if (process.platform === 'win32') {
+    return;
+  }
+
+  let handle;
+  try {
+    handle = await fs.open(directoryPath, 'r');
+    await handle.sync();
+  } catch {
+    // Directory fsync is best-effort across platforms/filesystems.
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
 
 function createId() {
@@ -309,6 +423,8 @@ function normalizePaper(input = {}, existing = {}) {
     pageSnapshotPath: coalesceText(input.pageSnapshotPath, existing.pageSnapshotPath, ''),
     thumbnailPath: coalesceText(input.thumbnailPath, existing.thumbnailPath, ''),
     sourceFilename: coalesceText(input.sourceFilename, existing.sourceFilename, ''),
+    doi: input.doi === undefined ? String(existing.doi || '').trim() : normalizeDoi(input.doi),
+    sourceUrl: input.sourceUrl === undefined ? String(existing.sourceUrl || '').trim() : normalizeUrl(input.sourceUrl),
     abstract: input.abstract === undefined ? coalesceText(existing.abstract, '') : String(input.abstract || '').trim(),
     notes: input.notes === undefined ? String(existing.notes || '') : String(input.notes || ''),
     creates: normalizeCreates(input.creates, existing.creates),
@@ -346,6 +462,50 @@ function coalesceText(...values) {
   }
 
   return '';
+}
+
+function normalizeDoi(value) {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+    .replace(/^doi:\s*/i, '')
+    .replace(/\s+/g, '')
+    .replace(/[),.;\]]+$/g, '');
+  const match = cleaned.match(/^10\.\d{4,9}\/[-._;()/:A-Z0-9]+$/i) || cleaned.match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i);
+  return match ? match[0].replace(/[),.;\]]+$/g, '') : '';
+}
+
+function normalizeUrl(value) {
+  const text = String(value || '').trim();
+
+  if (!text) {
+    return '';
+  }
+
+  try {
+    const url = new URL(text.startsWith('doi:') ? `https://doi.org/${normalizeDoi(text)}` : text);
+    return /^https?:$/.test(url.protocol) ? url.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
+function getInputKind(value) {
+  const text = String(value || '').trim();
+  const doi = normalizeDoi(text);
+
+  if (/^(?:doi:\s*)?10\.\d{4,9}\//i.test(text) || (/^10\.\d{4,9}\//i.test(doi) && !/^https?:\/\//i.test(text))) {
+    return { kind: 'doi', doi };
+  }
+
+  const url = normalizeUrl(text);
+  const doiFromUrl = extractDoi(text);
+
+  if (doiFromUrl && /doi\.org\//i.test(text)) {
+    return { kind: 'doi', doi: doiFromUrl, sourceUrl: url || `https://doi.org/${doiFromUrl}` };
+  }
+
+  return { kind: 'url', url };
 }
 
 function migrateStatus(status) {
@@ -503,6 +663,31 @@ async function copyPaperIntoLibrary(sourcePath, id) {
   const targetPath = path.join(papersDir, `${id}${extension}`);
   await fs.copyFile(sourcePath, targetPath);
   return targetPath;
+}
+
+async function writeRemotePdfIntoLibrary(buffer, id) {
+  const { papersDir } = getStorePaths();
+  const targetPath = path.join(papersDir, `${id}.pdf`);
+  await fs.writeFile(targetPath, buffer);
+  return targetPath;
+}
+
+async function fetchWithTimeout(url, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), options.timeout || 15000);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        'User-Agent': `${APP_NAME}/${app.getVersion()} (local paper capture)`,
+        ...(options.headers || {})
+      }
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function createPdfPageSnapshot(filePath, id) {
@@ -966,8 +1151,208 @@ async function extractPdfMetadata(filePath, filenameHint = '') {
     abstract: textMetadata.abstract,
     year: textMetadata.year,
     venue: textMetadata.venue,
+    doi: textMetadata.doi || extractDoi(`${parsed.text || ''} ${head}`),
     tags: []
   };
+}
+
+async function capturePaperFromUrlOrDoi(input, bucketId, library) {
+  const capture = getInputKind(input);
+  if (!capture.doi && !capture.url && !capture.sourceUrl) {
+    throw new Error('Enter a valid DOI or http(s) URL.');
+  }
+
+  const id = createId();
+  const baseMetadata = {
+    title: capture.url || capture.sourceUrl || capture.doi || 'Untitled paper',
+    doi: capture.doi || '',
+    sourceUrl: capture.sourceUrl || capture.url || ''
+  };
+
+  let metadata = {};
+  let pdfBuffer = null;
+  let sourceUrl = baseMetadata.sourceUrl;
+
+  if (capture.kind === 'doi' && capture.doi) {
+    metadata = await fetchDoiMetadata(capture.doi).catch(() => ({}));
+    sourceUrl = metadata.sourceUrl || sourceUrl || `https://doi.org/${capture.doi}`;
+  }
+
+  if (sourceUrl) {
+    const remote = await fetchRemotePaper(sourceUrl).catch(() => null);
+
+    if (remote?.metadata) {
+      metadata = mergeCaptureMetadata(metadata, remote.metadata);
+    }
+
+    if (remote?.pdfBuffer) {
+      pdfBuffer = remote.pdfBuffer;
+    }
+
+    sourceUrl = remote?.sourceUrl || sourceUrl;
+  }
+
+  let localPath = '';
+  let pageSnapshotPath = '';
+  let thumbnailPath = '';
+  let pdfMetadata = {};
+
+  if (pdfBuffer) {
+    localPath = await writeRemotePdfIntoLibrary(pdfBuffer, id);
+    pdfMetadata = await extractPdfMetadata(localPath).catch(() => ({}));
+    pageSnapshotPath = await createPdfPageSnapshot(localPath, id);
+    thumbnailPath = await createFigureOneThumbnail(localPath, id);
+  }
+
+  const paper = normalizePaper({
+    id,
+    ...baseMetadata,
+    ...mergeCaptureMetadata(metadata, pdfMetadata),
+    sourceUrl,
+    localPath,
+    pageSnapshotPath,
+    thumbnailPath,
+    sourceFilename: sourceUrl ? path.basename(new URL(sourceUrl).pathname) : '',
+    status: 'to-read',
+    bucketId: library.buckets.some((bucket) => bucket.id === bucketId) ? bucketId : library.buckets[0]?.id || 'general'
+  });
+
+  return paper;
+}
+
+function mergeCaptureMetadata(primary = {}, fallback = {}) {
+  const merged = { ...fallback, ...primary };
+
+  for (const field of ['title', 'authors', 'institutions', 'abstract', 'venue', 'year', 'doi', 'sourceUrl']) {
+    merged[field] = primary[field] || fallback[field] || '';
+  }
+
+  merged.tags = [];
+  return merged;
+}
+
+async function fetchDoiMetadata(doi) {
+  const normalizedDoi = normalizeDoi(doi);
+  const response = await fetchWithTimeout(`${CROSSREF_WORKS_API_URL}${encodeURIComponent(normalizedDoi)}`, {
+    headers: { Accept: 'application/json' }
+  });
+
+  if (!response.ok) {
+    throw new Error(`DOI lookup failed with ${response.status}`);
+  }
+
+  const item = (await response.json())?.message || {};
+  const published = item.published?.['date-parts']?.[0] || item['published-print']?.['date-parts']?.[0] || item['published-online']?.['date-parts']?.[0] || [];
+  const container = Array.isArray(item['container-title']) ? item['container-title'][0] : '';
+
+  return {
+    title: Array.isArray(item.title) ? cleanText(item.title[0]) : '',
+    authors: formatCrossrefAuthors(item.author),
+    venue: cleanText(container),
+    year: published[0] ? String(published[0]) : '',
+    doi: normalizeDoi(item.DOI || normalizedDoi),
+    sourceUrl: normalizeUrl(item.URL || `https://doi.org/${normalizedDoi}`),
+    abstract: cleanText(item.abstract || '')
+  };
+}
+
+function formatCrossrefAuthors(authors) {
+  if (!Array.isArray(authors)) {
+    return '';
+  }
+
+  return authors
+    .slice(0, 12)
+    .map((author) => cleanText([author.given, author.family].filter(Boolean).join(' ')))
+    .filter(Boolean)
+    .join(', ');
+}
+
+async function fetchRemotePaper(url) {
+  const response = await fetchWithTimeout(url, {
+    redirect: 'follow',
+    headers: {
+      Accept: 'application/pdf,text/html,application/xhtml+xml;q=0.9,*/*;q=0.7'
+    },
+    timeout: 20000
+  });
+
+  if (!response.ok) {
+    throw new Error(`URL capture failed with ${response.status}`);
+  }
+
+  const sourceUrl = response.url || url;
+  const contentType = response.headers.get('content-type') || '';
+
+  if (/application\/pdf/i.test(contentType) || /\.pdf(?:$|[?#])/i.test(sourceUrl)) {
+    const pdfBuffer = await readPdfResponse(response);
+    return { sourceUrl, pdfBuffer, metadata: {} };
+  }
+
+  const html = await response.text();
+  const metadata = extractMetadataFromHtml(html, sourceUrl);
+
+  if (metadata.sourceUrl && metadata.sourceUrl !== sourceUrl && /\.pdf(?:$|[?#])/i.test(metadata.sourceUrl)) {
+    const pdf = await fetchRemotePaper(metadata.sourceUrl).catch(() => null);
+    if (pdf?.pdfBuffer) {
+      return { sourceUrl, pdfBuffer: pdf.pdfBuffer, metadata };
+    }
+  }
+
+  return { sourceUrl, metadata };
+}
+
+async function readPdfResponse(response) {
+  const contentLength = Number(response.headers.get('content-length') || 0);
+
+  if (contentLength > MAX_REMOTE_PDF_BYTES) {
+    throw new Error('Remote PDF is too large to store locally.');
+  }
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+
+  if (buffer.length > MAX_REMOTE_PDF_BYTES) {
+    throw new Error('Remote PDF is too large to store locally.');
+  }
+
+  return buffer;
+}
+
+function extractMetadataFromHtml(html, sourceUrl) {
+  const getMeta = (names) => {
+    for (const name of names) {
+      const safeName = escapeRegExp(name);
+      const pattern = new RegExp(`<meta\\s+[^>]*(?:name|property)=["']${safeName}["'][^>]*content=["']([^"']+)["'][^>]*>`, 'i');
+      const reversedPattern = new RegExp(`<meta\\s+[^>]*content=["']([^"']+)["'][^>]*(?:name|property)=["']${safeName}["'][^>]*>`, 'i');
+      const match = html.match(pattern) || html.match(reversedPattern);
+
+      if (match?.[1]) {
+        return cleanText(decodeHtmlEntities(match[1]));
+      }
+    }
+
+    return '';
+  };
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+
+  return {
+    title: getMeta(['citation_title', 'dc.title', 'og:title']) || cleanText(decodeHtmlEntities(titleMatch?.[1] || '')),
+    authors: getRepeatedMeta(html, 'citation_author').join(', '),
+    venue: getMeta(['citation_conference_title', 'citation_journal_title', 'dc.source']),
+    year: inferYear(getMeta(['citation_publication_date', 'citation_online_date', 'dc.date'])),
+    doi: normalizeDoi(getMeta(['citation_doi', 'dc.identifier'])),
+    sourceUrl: normalizeUrl(getMeta(['citation_pdf_url']) || sourceUrl),
+    abstract: getMeta(['description', 'og:description', 'dc.description'])
+  };
+}
+
+function getRepeatedMeta(html, name) {
+  const pattern = new RegExp(`<meta\\s+[^>]*(?:name|property)=["']${escapeRegExp(name)}["'][^>]*content=["']([^"']+)["'][^>]*>`, 'gi');
+  return [...html.matchAll(pattern)].map((match) => cleanText(decodeHtmlEntities(match[1]))).filter(Boolean);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function mergeExtractedMetadata(paper, metadata) {
@@ -988,6 +1373,10 @@ function mergeExtractedMetadata(paper, metadata) {
 
   if (metadata.abstract && !paper.abstract) {
     update.abstract = metadata.abstract;
+  }
+
+  if (metadata.doi && !paper.doi) {
+    update.doi = metadata.doi;
   }
 
   for (const field of ['venue', 'year']) {
@@ -1322,6 +1711,22 @@ function cleanText(value) {
     .trim();
 }
 
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&#(\d+);/g, (_match, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_match, code) => String.fromCharCode(Number.parseInt(code, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function extractDoi(value) {
+  const match = String(value || '').match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i);
+  return match ? normalizeDoi(match[0]) : '';
+}
+
 function inferYear(value) {
   const match = String(value).match(/\b(19|20)\d{2}\b/);
   return match ? match[0] : '';
@@ -1527,6 +1932,14 @@ ipcMain.handle('paper:importPdfPath', async (_event, filePath, bucketId) => {
   return paper;
 });
 
+ipcMain.handle('paper:importUrlDoi', async (_event, input, bucketId) => {
+  const library = await readLibrary();
+  const paper = await capturePaperFromUrlOrDoi(input, bucketId, library);
+  library.papers.unshift(paper);
+  await writeLibrary(library);
+  return paper;
+});
+
 ipcMain.handle('paper:update', async (_event, id, patch) => {
   const library = await readLibrary();
   const index = library.papers.findIndex((paper) => paper.id === id);
@@ -1634,6 +2047,23 @@ ipcMain.handle('paper:openPdf', async (_event, id) => {
   }
 
   await shell.openPath(paper.localPath);
+  paper.lastOpenedAt = new Date().toISOString();
+  paper.updatedAt = paper.lastOpenedAt;
+  await writeLibrary(library);
+
+  return { opened: true };
+});
+
+ipcMain.handle('paper:openSource', async (_event, id) => {
+  const library = await readLibrary();
+  const paper = library.papers.find((item) => item.id === id);
+  const sourceUrl = normalizeUrl(paper?.sourceUrl || (paper?.doi ? `https://doi.org/${paper.doi}` : ''));
+
+  if (!paper || !sourceUrl) {
+    return { opened: false };
+  }
+
+  await shell.openExternal(sourceUrl);
   paper.lastOpenedAt = new Date().toISOString();
   paper.updatedAt = paper.lastOpenedAt;
   await writeLibrary(library);

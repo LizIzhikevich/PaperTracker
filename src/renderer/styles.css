@@ -432,14 +432,14 @@ button:disabled {
 
 .add-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
   margin-top: auto;
 }
 
 .add-action {
   display: grid;
-  min-height: 66px;
+  min-height: 62px;
   place-items: center;
   gap: 7px;
   padding: 9px 6px;
@@ -487,6 +487,7 @@ button:disabled {
 }
 
 .binder-create-form,
+.link-capture-form,
 .binder-rename-form {
   display: grid;
   gap: 8px;
@@ -541,6 +542,7 @@ button:disabled {
 }
 
 .binder-create-form > input,
+.link-capture-form > input,
 .binder-rename-form > input {
   width: 100%;
   height: 34px;
@@ -553,6 +555,7 @@ button:disabled {
 }
 
 .binder-create-form > input:focus,
+.link-capture-form > input:focus,
 .binder-rename-form > input:focus {
   border-color: var(--blue);
   box-shadow: 0 0 0 3px rgba(83, 109, 149, 0.12);
@@ -565,12 +568,20 @@ button:disabled {
 }
 
 .binder-create-form button,
+.link-capture-form button,
 .binder-rename-form button {
   min-height: 30px;
   border: 1px solid var(--line);
   border-radius: 7px;
   color: #4f5964;
   background: #fbfcfd;
+}
+
+.link-capture-form p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 
 .binder-rename-form {

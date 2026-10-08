@@ -72,8 +72,10 @@ const state = {
   query: '',
   contextMenu: null,
   isCreatingBinder: false,
+  isAddingLink: false,
   renamingBucketId: '',
   coloringBucketId: '',
+  linkCaptureStatus: '',
   updateStatus: {
     currentVersion: '',
     latestVersion: '',
@@ -189,7 +191,7 @@ function getVisiblePapers() {
   return sortPapers(state.papers).filter((paper) => {
     const matchesBucket = state.selectedBucketId === 'library' || paper.bucketId === state.selectedBucketId;
     const createsText = createsFields.map((field) => paper.creates?.[field.id] || '').join(' ');
-    const haystack = [paper.title, paper.authors, paper.institutions, paper.venue, paper.year, paper.abstract, paper.notes, createsText, paper.tags.join(' ')]
+    const haystack = [paper.title, paper.authors, paper.institutions, paper.venue, paper.year, paper.doi, paper.sourceUrl, paper.abstract, paper.notes, createsText, paper.tags.join(' ')]
       .join(' ')
       .toLowerCase();
 
@@ -498,6 +500,9 @@ function normalizePaper(input = {}, existing = {}) {
     localPath: String(input.localPath || existing.localPath || '').trim(),
     pageSnapshotPath: String(input.pageSnapshotPath || existing.pageSnapshotPath || '').trim(),
     thumbnailPath: String(input.thumbnailPath || existing.thumbnailPath || '').trim(),
+    sourceFilename: String(input.sourceFilename || existing.sourceFilename || '').trim(),
+    doi: input.doi === undefined ? String(existing.doi || '').trim() : normalizeDoi(input.doi),
+    sourceUrl: input.sourceUrl === undefined ? String(existing.sourceUrl || '').trim() : normalizeUrl(input.sourceUrl),
     abstract: input.abstract === undefined ? String(existing.abstract || '').trim() : String(input.abstract || '').trim(),
     notes: String(input.notes || existing.notes || ''),
     creates: normalizeCreates(input.creates, existing.creates),
@@ -524,6 +529,32 @@ function normalizeCreates(input = {}, existing = {}) {
 
 function normalizePriority(priority) {
   return priority === 'high' ? 'high' : 'normal';
+}
+
+function normalizeDoi(value) {
+  const cleaned = String(value || '')
+    .trim()
+    .replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '')
+    .replace(/^doi:\s*/i, '')
+    .replace(/\s+/g, '')
+    .replace(/[),.;\]]+$/g, '');
+  const match = cleaned.match(/^10\.\d{4,9}\/[-._;()/:A-Z0-9]+$/i) || cleaned.match(/\b10\.\d{4,9}\/[-._;()/:A-Z0-9]+/i);
+  return match ? match[0].replace(/[),.;\]]+$/g, '') : '';
+}
+
+function normalizeUrl(value) {
+  const text = String(value || '').trim();
+
+  if (!text) {
+    return '';
+  }
+
+  try {
+    const url = new URL(text.startsWith('doi:') ? `https://doi.org/${normalizeDoi(text)}` : text);
+    return /^https?:$/.test(url.protocol) ? url.toString() : '';
+  } catch {
+    return '';
+  }
 }
 
 function normalizeReadTab(value) {
@@ -628,6 +659,20 @@ function createBrowserPaperApi() {
     async importPdfPath(_filePath, bucketId) {
       return this.importPdf(bucketId);
     },
+    async importUrlDoi(input, bucketId) {
+      const text = String(input || '').trim();
+      const doi = normalizeDoi(text);
+      const sourceUrl = normalizeUrl(text) || (/^10\.\d{4,9}\//i.test(doi) ? `https://doi.org/${doi}` : '');
+      return this.createPaper({
+        title: doi || sourceUrl || 'Captured paper',
+        doi: /^10\.\d{4,9}\//i.test(doi) ? doi : '',
+        sourceUrl,
+        status: 'to-read',
+        priority: 'normal',
+        bucketId: bucketId || state.buckets[0]?.id || defaultBucketId,
+        notes: 'URL/DOI capture with metadata lookup works in the Electron app. This browser preview stores the source locally only.'
+      });
+    },
     async updatePaper(id, patch) {
       const library = readLibrary();
       const index = library.papers.findIndex((paper) => paper.id === id);
@@ -649,6 +694,15 @@ function createBrowserPaperApi() {
       return { deleted: Boolean(target) };
     },
     async openPdf() {
+      return { opened: false };
+    },
+    async openSource(id) {
+      const paper = readLibrary().papers.find((item) => item.id === id);
+      if (paper?.sourceUrl) {
+        window.open(paper.sourceUrl, '_blank', 'noopener');
+        return { opened: true };
+      }
+
       return { opened: false };
     },
     async createBucket(input) {
@@ -787,6 +841,13 @@ function renderSidebar() {
           </span>
           <span>Paper</span>
         </button>
+        <button class="add-action" data-action="add-link">
+          <span class="add-action-mark">
+            <span class="action-icon">${renderIcon('link')}</span>
+            <span class="add-plus">+</span>
+          </span>
+          <span>URL/DOI</span>
+        </button>
         <button class="add-action" data-action="new-bucket">
           <span class="add-action-mark">
             <span class="action-icon">${renderIcon('binder')}</span>
@@ -795,6 +856,7 @@ function renderSidebar() {
           <span>Binder</span>
         </button>
       </div>
+      ${state.isAddingLink ? renderLinkCaptureForm() : ''}
       ${state.isCreatingBinder ? renderCreateBinderForm() : ''}
 
       <section class="progress-panel">
@@ -922,6 +984,19 @@ function renderCreateBinderForm() {
   `;
 }
 
+function renderLinkCaptureForm() {
+  return `
+    <form class="link-capture-form" data-link-capture>
+      <input name="paperSource" placeholder="Paste DOI or paper URL" autocomplete="off">
+      <div class="binder-create-actions">
+        <button type="submit">Add</button>
+        <button type="button" data-action="cancel-link-capture">Cancel</button>
+      </div>
+      ${state.linkCaptureStatus ? `<p>${escapeHtml(state.linkCaptureStatus)}</p>` : ''}
+    </form>
+  `;
+}
+
 function renderColorPicker(bucketId, selectedColor, inputName = '') {
   const name = inputName || `binderColor-${bucketId}`;
 
@@ -966,6 +1041,8 @@ function renderIcon(name) {
     active: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10v7H3z"/><path d="M5.5 7h5M5.5 9.5h3"/></svg>',
     archive: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10v8H3z"/><path d="M2.5 3h11v2h-11z"/><path d="M6 8h4"/></svg>',
     binder: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 2.8h8.3c.7 0 1.3.6 1.3 1.3v9.1H4.5c-.7 0-1.3-.6-1.3-1.3z"/><path d="M4.5 13.2c-.7 0-1.3-.6-1.3-1.3s.6-1.3 1.3-1.3h8.3"/><path d="M5.8 2.8v7.8"/><path d="M7.3 5.1h3.2"/></svg>'
+    ,
+    link: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.7 5.2 8 3.9a3 3 0 0 1 4.2 4.2l-1.5 1.5"/><path d="M9.3 10.8 8 12.1a3 3 0 0 1-4.2-4.2l1.5-1.5"/><path d="m6.4 9.6 3.2-3.2"/></svg>'
   };
 
   return icons[name] || '';
@@ -1386,6 +1463,23 @@ function renderInspector() {
         </datalist>
       </label>
 
+      <div class="control-row">
+        <label>
+          DOI
+          <input data-field="doi" value="${escapeHtml(paper.doi || '')}">
+        </label>
+        <label>
+          Source URL
+          <input data-field="sourceUrl" value="${escapeHtml(paper.sourceUrl || '')}">
+        </label>
+      </div>
+
+      ${
+        paper.sourceUrl || paper.doi
+          ? `<button class="secondary-action" data-action="open-source" type="button">Open source</button>`
+          : ''
+      }
+
       <div class="inspector-footer">
         <button class="danger-action" data-action="delete">Delete paper</button>
       </div>
@@ -1417,6 +1511,10 @@ function render(options = {}) {
     document.querySelector('[data-binder-create] input')?.focus();
   }
 
+  if (options.focusLinkCapture) {
+    document.querySelector('[data-link-capture] input')?.focus();
+  }
+
   if (options.focusRenameBinder) {
     const renameInput = document.querySelector('[data-binder-rename] input');
     renameInput?.focus();
@@ -1438,8 +1536,10 @@ function bindEvents() {
 
     state.contextMenu = null;
     state.isCreatingBinder = false;
+    state.isAddingLink = false;
     state.renamingBucketId = '';
     state.coloringBucketId = '';
+    state.linkCaptureStatus = '';
     render();
   };
 
@@ -1688,12 +1788,26 @@ function bindEvents() {
   });
 
   document.querySelector('[data-action="import"]')?.addEventListener('click', importPdf);
+  document.querySelector('[data-action="add-link"]')?.addEventListener('click', () => {
+    state.isAddingLink = true;
+    state.isCreatingBinder = false;
+    state.contextMenu = null;
+    state.linkCaptureStatus = '';
+    render({ focusLinkCapture: true });
+  });
   document.querySelector('[data-action="new-bucket"]')?.addEventListener('click', () => {
     state.isCreatingBinder = true;
+    state.isAddingLink = false;
     state.contextMenu = null;
     state.coloringBucketId = '';
     render({ focusNewBinder: true });
   });
+  document.querySelector('[data-action="cancel-link-capture"]')?.addEventListener('click', () => {
+    state.isAddingLink = false;
+    state.linkCaptureStatus = '';
+    render();
+  });
+  document.querySelector('[data-link-capture]')?.addEventListener('submit', importUrlOrDoi);
   document.querySelector('[data-action="cancel-new-binder"]')?.addEventListener('click', () => {
     state.isCreatingBinder = false;
     render();
@@ -1736,6 +1850,7 @@ function bindEvents() {
     input.addEventListener('change', () => updateBinderColor(input.dataset.binderColor, input.value));
   });
   document.querySelector('[data-action="open-pdf"]')?.addEventListener('click', openSelectedPdf);
+  document.querySelector('[data-action="open-source"]')?.addEventListener('click', openSelectedSource);
   document.querySelector('[data-action="close-details"]')?.addEventListener('click', () => {
     state.selectedId = '';
     render();
@@ -1868,6 +1983,36 @@ async function importPdf() {
     state.selectedId = '';
     state.selectedBucketId = paper.bucketId || state.selectedBucketId;
     render();
+  }
+}
+
+async function importUrlOrDoi(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const input = new FormData(form).get('paperSource');
+
+  if (!String(input || '').trim()) {
+    return;
+  }
+
+  state.linkCaptureStatus = 'Capturing...';
+  render({ focusLinkCapture: true });
+
+  try {
+    const targetBucketId = state.selectedBucketId === 'library' ? state.buckets[0]?.id || defaultBucketId : state.selectedBucketId;
+    const paper = await paperApi.importUrlDoi(input, targetBucketId);
+
+    if (paper) {
+      state.papers.unshift(paper);
+      state.selectedBucketId = paper.bucketId || state.selectedBucketId;
+      state.selectedId = paper.id;
+      state.isAddingLink = false;
+      state.linkCaptureStatus = '';
+      render({ scrollInspectorTop: true });
+    }
+  } catch (error) {
+    state.linkCaptureStatus = `Could not capture: ${error.message || error}`;
+    render({ focusLinkCapture: true });
   }
 }
 
@@ -2096,6 +2241,15 @@ async function openSelectedPdf() {
   if (paper) {
     await paperApi.openPdf(paper.id);
   }
+}
+
+async function openSelectedSource() {
+  const paper = getSelectedPaper();
+  if (!paper || !paperApi.openSource) {
+    return;
+  }
+
+  await paperApi.openSource(paper.id);
 }
 
 async function deleteSelectedPaper() {
