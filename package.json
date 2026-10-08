@@ -1,6 +1,6 @@
 {
   "name": "paper-tracker",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "A local-first desktop paper workflow tracker for macOS and Windows.",
   "main": "src/main.js",
   "private": true,

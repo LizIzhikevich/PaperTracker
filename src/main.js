@@ -8,6 +8,9 @@ const pdfParse = require('pdf-parse');
 
 const execFileAsync = promisify(execFile);
 
+ignoreBrokenPipe(process.stdout);
+ignoreBrokenPipe(process.stderr);
+
 const STATUSES = new Set(['to-read', 'reading', 'read']);
 const PRIORITIES = new Set(['normal', 'high']);
 const CREATES_FIELDS = ['claim', 'reasoning', 'evidence', 'assumptions', 'threats', 'extensions'];
@@ -44,6 +47,14 @@ const MAX_REMOTE_PDF_BYTES = 75 * 1024 * 1024;
 const LIBRARY_BACKUP_LIMIT = 12;
 
 configureUserDataPath();
+
+function ignoreBrokenPipe(stream) {
+  stream?.on?.('error', (error) => {
+    if (error?.code !== 'EPIPE') {
+      throw error;
+    }
+  });
+}
 
 function configureUserDataPath() {
   app.setName(APP_NAME);

@@ -72,6 +72,7 @@ const state = {
   query: '',
   contextMenu: null,
   isCreatingBinder: false,
+  isChoosingPaperSource: false,
   isAddingLink: false,
   renamingBucketId: '',
   coloringBucketId: '',
@@ -841,13 +842,6 @@ function renderSidebar() {
           </span>
           <span>Paper</span>
         </button>
-        <button class="add-action" data-action="add-link">
-          <span class="add-action-mark">
-            <span class="action-icon">${renderIcon('link')}</span>
-            <span class="add-plus">+</span>
-          </span>
-          <span>URL/DOI</span>
-        </button>
         <button class="add-action" data-action="new-bucket">
           <span class="add-action-mark">
             <span class="action-icon">${renderIcon('binder')}</span>
@@ -856,6 +850,7 @@ function renderSidebar() {
           <span>Binder</span>
         </button>
       </div>
+      ${state.isChoosingPaperSource ? renderPaperSourceChooser() : ''}
       ${state.isAddingLink ? renderLinkCaptureForm() : ''}
       ${state.isCreatingBinder ? renderCreateBinderForm() : ''}
 
@@ -981,6 +976,15 @@ function renderCreateBinderForm() {
         <button type="button" data-action="cancel-new-binder">Cancel</button>
       </div>
     </form>
+  `;
+}
+
+function renderPaperSourceChooser() {
+  return `
+    <div class="paper-source-chooser" data-paper-source-chooser>
+      <button type="button" data-action="upload-paper">Upload PDF</button>
+      <button type="button" data-action="show-link-capture">URL/DOI</button>
+    </div>
   `;
 }
 
@@ -1536,6 +1540,7 @@ function bindEvents() {
 
     state.contextMenu = null;
     state.isCreatingBinder = false;
+    state.isChoosingPaperSource = false;
     state.isAddingLink = false;
     state.renamingBucketId = '';
     state.coloringBucketId = '';
@@ -1787,9 +1792,18 @@ function bindEvents() {
     });
   });
 
-  document.querySelector('[data-action="import"]')?.addEventListener('click', importPdf);
-  document.querySelector('[data-action="add-link"]')?.addEventListener('click', () => {
+  document.querySelector('[data-action="import"]')?.addEventListener('click', () => {
+    state.isChoosingPaperSource = true;
+    state.isAddingLink = false;
+    state.isCreatingBinder = false;
+    state.contextMenu = null;
+    state.linkCaptureStatus = '';
+    render();
+  });
+  document.querySelector('[data-action="upload-paper"]')?.addEventListener('click', importPdf);
+  document.querySelector('[data-action="show-link-capture"]')?.addEventListener('click', () => {
     state.isAddingLink = true;
+    state.isChoosingPaperSource = false;
     state.isCreatingBinder = false;
     state.contextMenu = null;
     state.linkCaptureStatus = '';
@@ -1797,6 +1811,7 @@ function bindEvents() {
   });
   document.querySelector('[data-action="new-bucket"]')?.addEventListener('click', () => {
     state.isCreatingBinder = true;
+    state.isChoosingPaperSource = false;
     state.isAddingLink = false;
     state.contextMenu = null;
     state.coloringBucketId = '';
@@ -1804,6 +1819,7 @@ function bindEvents() {
   });
   document.querySelector('[data-action="cancel-link-capture"]')?.addEventListener('click', () => {
     state.isAddingLink = false;
+    state.isChoosingPaperSource = false;
     state.linkCaptureStatus = '';
     render();
   });
@@ -1982,6 +1998,8 @@ async function importPdf() {
     state.papers.unshift(paper);
     state.selectedId = '';
     state.selectedBucketId = paper.bucketId || state.selectedBucketId;
+    state.isChoosingPaperSource = false;
+    state.isAddingLink = false;
     render();
   }
 }
@@ -2006,6 +2024,7 @@ async function importUrlOrDoi(event) {
       state.papers.unshift(paper);
       state.selectedBucketId = paper.bucketId || state.selectedBucketId;
       state.selectedId = paper.id;
+      state.isChoosingPaperSource = false;
       state.isAddingLink = false;
       state.linkCaptureStatus = '';
       render({ scrollInspectorTop: true });

@@ -85,7 +85,11 @@ button:disabled {
 .sidebar button,
 .sidebar input,
 .sidebar form,
+.paper-source-chooser,
 .workspace button,
+.workspace input,
+.workspace select,
+.workspace textarea,
 .inspector button,
 .inspector input,
 .inspector textarea,
@@ -432,7 +436,7 @@ button:disabled {
 
 .add-actions {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: auto;
 }
@@ -487,6 +491,7 @@ button:disabled {
 }
 
 .binder-create-form,
+.paper-source-chooser,
 .link-capture-form,
 .binder-rename-form {
   display: grid;
@@ -495,6 +500,24 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.paper-source-chooser {
+  grid-template-columns: 1fr 1fr;
+}
+
+.paper-source-chooser button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: #4f5964;
+  background: #fbfcfd;
+}
+
+.paper-source-chooser button:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+  background: #eef2f6;
 }
 
 .binder-rename-form {
@@ -780,6 +803,7 @@ button:disabled {
   align-items: center;
   padding: 0 36px;
   border-bottom: 1px solid var(--line);
+  -webkit-app-region: drag;
 }
 
 .topbar-main {
@@ -1412,6 +1436,7 @@ button:disabled {
   display: flex;
   justify-content: space-between;
   gap: 18px;
+  -webkit-app-region: drag;
 }
 
 .inspector-title-block {
