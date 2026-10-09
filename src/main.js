@@ -56,6 +56,7 @@ const LOCAL_EMBEDDING_MODEL_VERSION = 'minilm-l6-v2-q8';
 const DISCOVERY_LOOKBACK_DAYS = 730;
 const DISCOVERY_MAX_PAPERS_PER_VENUE = 50;
 const DISCOVERY_MAX_CANDIDATES = 160;
+const DISCOVERY_MAX_SOURCES_PER_VENUE = 3;
 const MAX_REMOTE_PDF_BYTES = 75 * 1024 * 1024;
 const LIBRARY_BACKUP_LIMIT = 12;
 
@@ -469,6 +470,7 @@ function normalizeDiscovery(input = {}) {
     feedback: normalizeDiscoveryFeedback(source.feedback),
     embeddings: normalizeDiscoveryEmbeddings(source.embeddings),
     lastRefreshedAt: String(source.lastRefreshedAt || ''),
+    lastResultSummary: cleanText(source.lastResultSummary || ''),
     lastError: String(source.lastError || '')
   };
 }
@@ -2120,8 +2122,13 @@ async function refreshDiscovery(library) {
     throw new Error('Choose at least one venue to comb first.');
   }
 
-  const candidateGroups = await Promise.all(selectedVenues.map((venue) => fetchVenueProceedings(venue).catch(() => [])));
-  const existingCandidates = new Map(discovery.candidates.map((candidate) => [candidate.id, candidate]));
+  const venueResults = await Promise.allSettled(selectedVenues.map((venue) => fetchVenueProceedings(venue)));
+  const candidateGroups = venueResults.filter((result) => result.status === 'fulfilled').map((result) => result.value);
+  const failedVenues = venueResults
+    .map((result, index) => (result.status === 'rejected' ? selectedVenues[index].name : ''))
+    .filter(Boolean);
+  const selectedVenueIds = new Set(selectedVenues.map((venue) => venue.id));
+  const existingCandidates = new Map(discovery.candidates.filter((candidate) => !selectedVenueIds.has(candidate.venueId)).map((candidate) => [candidate.id, candidate]));
   const libraryPaperIds = new Set(library.papers.map((paper) => paper.id));
   const knownDoi = new Set(library.papers.map((paper) => normalizeDoi(paper.doi)).filter(Boolean));
   const knownTitles = new Set(library.papers.map((paper) => normalizeDiscoveryTitle(paper.title)).filter(Boolean));
@@ -2139,14 +2146,19 @@ async function refreshDiscovery(library) {
     .slice(0, DISCOVERY_MAX_CANDIDATES);
 
   const libraryPapers = library.papers.filter((paper) => getDiscoveryText(paper));
-  const visibleCandidates = discovery.candidates.filter((candidate) => !discovery.feedback[candidate.id] && getDiscoveryText(candidate));
+  const visibleCandidates = discovery.candidates.filter(
+    (candidate) => selectedVenueIds.has(candidate.venueId) && !discovery.feedback[candidate.id] && getDiscoveryText(candidate)
+  );
 
   if (!libraryPapers.length || !visibleCandidates.length) {
     discovery.recommendations = [];
     discovery.lastRefreshedAt = new Date().toISOString();
-    discovery.lastError = libraryPapers.length
-      ? 'No recent proceedings metadata was found for the selected venues. Try another venue or refresh later.'
-      : 'Add papers with a title, abstract, or tags before asking for recommendations.';
+    discovery.lastResultSummary = '';
+    discovery.lastError = !libraryPapers.length
+      ? 'Add papers with a title, abstract, or tags before asking for recommendations.'
+      : failedVenues.length
+        ? `Could not retrieve recent proceedings for ${failedVenues.join(', ')}. Check the conference name or try again later.`
+        : 'No recent proceedings metadata was found for the selected venues. Try a more specific conference name or refresh later.';
     library.discovery = discovery;
     await writeLibrary(library);
     return discovery;
@@ -2191,6 +2203,7 @@ async function refreshDiscovery(library) {
     .slice(0, 40);
 
   discovery.lastRefreshedAt = new Date().toISOString();
+  discovery.lastResultSummary = `Found ${visibleCandidates.length} recent proceeding${visibleCandidates.length === 1 ? '' : 's'} paper${visibleCandidates.length === 1 ? '' : 's'} across ${selectedVenues.length} selected venue${selectedVenues.length === 1 ? '' : 's'}.`;
   discovery.lastError = '';
   library.discovery = discovery;
   await writeLibrary(library);
@@ -2198,11 +2211,24 @@ async function refreshDiscovery(library) {
 }
 
 async function fetchVenueProceedings(venue) {
-  const source = await findOpenAlexSource(venue);
-  if (!source?.id) {
-    return [];
+  const sources = await findOpenAlexSources(venue);
+  if (!sources.length) {
+    throw new Error(`No matching conference record was found for ${venue.name}.`);
   }
 
+  const candidateGroups = await Promise.all(sources.map((source) => fetchOpenAlexSourceWorks(source, venue)));
+  const candidates = new Map();
+
+  for (const candidate of candidateGroups.flat()) {
+    candidates.set(candidate.id, candidate);
+  }
+
+  return [...candidates.values()]
+    .sort((left, right) => Date.parse(right.publicationDate) - Date.parse(left.publicationDate))
+    .slice(0, DISCOVERY_MAX_PAPERS_PER_VENUE);
+}
+
+async function fetchOpenAlexSourceWorks(source, venue) {
   const fromDate = new Date(Date.now() - DISCOVERY_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
   const filter = `primary_location.source.id:${source.id},from_publication_date:${fromDate}`;
   const url = new URL(`${OPENALEX_API_URL}/works`);
@@ -2222,7 +2248,7 @@ async function fetchVenueProceedings(venue) {
   return works.map((work) => normalizeOpenAlexWork(work, venue)).filter((candidate) => candidate.title);
 }
 
-async function findOpenAlexSource(venue) {
+async function findOpenAlexSources(venue) {
   const url = new URL(`${OPENALEX_API_URL}/sources`);
   url.searchParams.set('search', venue.sourceQuery || venue.name);
   url.searchParams.set('per-page', '10');
@@ -2231,16 +2257,20 @@ async function findOpenAlexSource(venue) {
   });
 
   if (!response.ok) {
-    return null;
+    throw new Error(`Conference lookup failed with ${response.status}`);
   }
 
   const results = (await response.json())?.results || [];
   const expectedNames = [venue.name, venue.sourceQuery, ...(venue.aliases || [])].map(normalizeDiscoveryTitle).filter(Boolean);
-  const bestMatch = results
+  const matches = results
     .map((source) => ({ source, score: getVenueSourceScore(normalizeDiscoveryTitle(source.display_name), expectedNames) }))
-    .sort((left, right) => right.score - left.score)[0];
+    .filter((match) => match.score >= 0.5);
+  const conferenceMatches = matches.filter((match) => match.source.type === 'conference');
 
-  return bestMatch?.score >= 0.5 ? bestMatch.source : null;
+  return (conferenceMatches.length ? conferenceMatches : matches)
+    .sort((left, right) => right.score - left.score || (right.source.relevance_score || 0) - (left.source.relevance_score || 0))
+    .slice(0, DISCOVERY_MAX_SOURCES_PER_VENUE)
+    .map((match) => match.source);
 }
 
 function getVenueSourceScore(name, expectedNames) {

@@ -1833,6 +1833,10 @@ body.is-file-hover .board {
   color: #b54338;
 }
 
+.discovery-status.is-success {
+  color: #27755b;
+}
+
 .discovery-results {
   max-width: 920px;
   margin: 0 auto;

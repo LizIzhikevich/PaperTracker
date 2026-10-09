@@ -189,6 +189,10 @@ function getCurrentBucket() {
   return state.buckets.find((bucket) => bucket.id === state.selectedBucketId) || state.buckets[0] || { id: defaultBucketId, name: 'General Reading' };
 }
 
+function getDefaultActiveBucketId() {
+  return state.buckets.find((bucket) => getBucketCategory(bucket) === 'active')?.id || state.buckets[0]?.id || defaultBucketId;
+}
+
 function getDiscovery() {
   const saved = state.discovery && typeof state.discovery === 'object' ? state.discovery : {};
   return {
@@ -197,6 +201,7 @@ function getDiscovery() {
     recommendations: Array.isArray(saved.recommendations) ? saved.recommendations : [],
     feedback: saved.feedback && typeof saved.feedback === 'object' ? saved.feedback : {},
     lastRefreshedAt: saved.lastRefreshedAt || '',
+    lastResultSummary: saved.lastResultSummary || '',
     lastError: saved.lastError || ''
   };
 }
@@ -1158,6 +1163,7 @@ function renderDiscovery() {
         </div>
         ${state.discoveryStatus ? `<p class="discovery-status">${escapeHtml(state.discoveryStatus)}</p>` : ''}
         ${discovery.lastError ? `<p class="discovery-status is-error">${escapeHtml(discovery.lastError)}</p>` : ''}
+        ${discovery.lastResultSummary ? `<p class="discovery-status is-success">${escapeHtml(discovery.lastResultSummary)}</p>` : ''}
         ${discovery.lastRefreshedAt ? `<p class="discovery-meta">Last refreshed ${escapeHtml(formatDiscoveryTimestamp(discovery.lastRefreshedAt))}. ${recommendations.length} recommendation${recommendations.length === 1 ? '' : 's'} ready.</p>` : ''}
         ${hasDesktopDiscovery ? '' : '<p class="discovery-status">Discovery runs in the desktop app.</p>'}
       </section>
@@ -2220,11 +2226,16 @@ async function importDiscoveryCandidate(candidateId) {
     return;
   }
 
-  const targetBucketId = state.buckets[0]?.id || defaultBucketId;
-  const result = await paperApi.importDiscoveryCandidate(candidateId, targetBucketId);
-  state.papers = [result.paper, ...state.papers.filter((paper) => paper.id !== result.paper.id)];
-  state.discovery = result.discovery;
-  state.discoveryStatus = 'Added to your library.';
+  try {
+    const targetBucketId = getDefaultActiveBucketId();
+    const result = await paperApi.importDiscoveryCandidate(candidateId, targetBucketId);
+    state.papers = [result.paper, ...state.papers.filter((paper) => paper.id !== result.paper.id)];
+    state.discovery = result.discovery;
+    state.discoveryStatus = 'Added to your library.';
+  } catch (error) {
+    state.discoveryStatus = `Could not add this paper: ${error.message || error}`;
+  }
+
   render();
 }
 
@@ -2233,8 +2244,13 @@ async function dismissDiscoveryCandidate(candidateId) {
     return;
   }
 
-  state.discovery = await paperApi.setDiscoveryFeedback(candidateId, 'dismissed');
-  state.discoveryStatus = 'Paper hidden from future recommendations.';
+  try {
+    state.discovery = await paperApi.setDiscoveryFeedback(candidateId, 'dismissed');
+    state.discoveryStatus = 'Paper hidden from future recommendations.';
+  } catch (error) {
+    state.discoveryStatus = `Could not hide this paper: ${error.message || error}`;
+  }
+
   render();
 }
 
@@ -2244,7 +2260,12 @@ async function openDiscoverySource(sourceUrl) {
   }
 
   if (paperApi.openDiscoverySource) {
-    await paperApi.openDiscoverySource(sourceUrl);
+    try {
+      await paperApi.openDiscoverySource(sourceUrl);
+    } catch (error) {
+      state.discoveryStatus = `Could not open the paper source: ${error.message || error}`;
+      render();
+    }
   } else {
     window.open(sourceUrl, '_blank', 'noopener');
   }
