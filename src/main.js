@@ -10,6 +10,13 @@ const execFileAsync = promisify(execFile);
 
 ignoreBrokenPipe(process.stdout);
 ignoreBrokenPipe(process.stderr);
+process.on('uncaughtException', (error) => {
+  if (error?.code === 'EPIPE') {
+    return;
+  }
+
+  throw error;
+});
 
 const STATUSES = new Set(['to-read', 'reading', 'read']);
 const PRIORITIES = new Set(['normal', 'high']);
@@ -43,8 +50,16 @@ const LEGACY_USER_DATA_DIR_NAMES = ['paper-tracker'];
 const RELEASES_API_URL = 'https://api.github.com/repos/LizIzhikevich/PaperTracker/releases/latest';
 const RELEASES_PAGE_URL = 'https://github.com/LizIzhikevich/PaperTracker/releases/latest';
 const CROSSREF_WORKS_API_URL = 'https://api.crossref.org/works/';
+const OPENALEX_API_URL = 'https://api.openalex.org';
+const LOCAL_EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
+const LOCAL_EMBEDDING_MODEL_VERSION = 'minilm-l6-v2-q8';
+const DISCOVERY_LOOKBACK_DAYS = 730;
+const DISCOVERY_MAX_PAPERS_PER_VENUE = 50;
+const DISCOVERY_MAX_CANDIDATES = 160;
 const MAX_REMOTE_PDF_BYTES = 75 * 1024 * 1024;
 const LIBRARY_BACKUP_LIMIT = 12;
+
+let embeddingPipelinePromise;
 
 configureUserDataPath();
 
@@ -68,7 +83,8 @@ function getStorePaths() {
     libraryFile: path.join(root, 'library.json'),
     papersDir: path.join(root, 'papers'),
     thumbnailsDir: path.join(root, 'thumbnails'),
-    backupsDir: path.join(root, 'backups')
+    backupsDir: path.join(root, 'backups'),
+    modelCacheDir: path.join(root, 'models', 'transformers')
   };
 }
 
@@ -129,6 +145,12 @@ async function ensureStore() {
 
     if (!Array.isArray(library.papers)) {
       library.papers = [];
+      changed = true;
+    }
+
+    const discovery = normalizeDiscovery(library.discovery);
+    if (JSON.stringify(discovery) !== JSON.stringify(library.discovery || {})) {
+      library.discovery = discovery;
       changed = true;
     }
 
@@ -288,7 +310,8 @@ function createStarterLibrary() {
     schemaVersion: 1,
     createdAt: new Date().toISOString(),
     buckets: getStarterBuckets(),
-    papers: getStarterPapers()
+    papers: getStarterPapers(),
+    discovery: normalizeDiscovery()
   };
 }
 
@@ -408,6 +431,120 @@ function normalizeTags(tags) {
     .split(',')
     .map((tag) => tag.trim())
     .filter(Boolean);
+}
+
+function normalizeDiscovery(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const seenVenueIds = new Set();
+  const venues = (Array.isArray(source.venues) ? source.venues : [])
+    .map(normalizeDiscoveryVenue)
+    .filter((venue) => {
+      if (!venue.id || !venue.name || seenVenueIds.has(venue.id)) {
+        return false;
+      }
+
+      seenVenueIds.add(venue.id);
+      return true;
+    });
+  const seenCandidateIds = new Set();
+  const candidates = (Array.isArray(source.candidates) ? source.candidates : [])
+    .map((candidate) => normalizeDiscoveryCandidate(candidate))
+    .filter((candidate) => {
+      if (!candidate.id || seenCandidateIds.has(candidate.id)) {
+        return false;
+      }
+
+      seenCandidateIds.add(candidate.id);
+      return true;
+    })
+    .slice(0, DISCOVERY_MAX_CANDIDATES);
+
+  return {
+    venues,
+    candidates,
+    recommendations: (Array.isArray(source.recommendations) ? source.recommendations : [])
+      .map((recommendation) => normalizeDiscoveryRecommendation(recommendation))
+      .filter((recommendation) => candidates.some((candidate) => candidate.id === recommendation.candidateId))
+      .slice(0, DISCOVERY_MAX_CANDIDATES),
+    feedback: normalizeDiscoveryFeedback(source.feedback),
+    embeddings: normalizeDiscoveryEmbeddings(source.embeddings),
+    lastRefreshedAt: String(source.lastRefreshedAt || ''),
+    lastError: String(source.lastError || '')
+  };
+}
+
+function normalizeDiscoveryVenue(venue = {}) {
+  const name = cleanText(venue.name || '');
+  const sourceQuery = cleanText(venue.sourceQuery || name);
+  const aliases = (Array.isArray(venue.aliases) ? venue.aliases : [])
+    .map((alias) => cleanText(alias))
+    .filter(Boolean)
+    .slice(0, 8);
+
+  return {
+    id: String(venue.id || slugify(name)),
+    name,
+    sourceQuery,
+    aliases,
+    enabled: Boolean(venue.enabled)
+  };
+}
+
+function normalizeDiscoveryCandidate(candidate = {}) {
+  return {
+    id: String(candidate.id || ''),
+    title: cleanText(candidate.title || ''),
+    authors: cleanText(candidate.authors || ''),
+    abstract: cleanText(candidate.abstract || ''),
+    venue: cleanText(candidate.venue || ''),
+    venueId: String(candidate.venueId || ''),
+    year: cleanText(candidate.year || ''),
+    publicationDate: cleanText(candidate.publicationDate || ''),
+    doi: normalizeDoi(candidate.doi || ''),
+    sourceUrl: normalizeUrl(candidate.sourceUrl || ''),
+    pdfUrl: normalizeUrl(candidate.pdfUrl || ''),
+    discoveredAt: String(candidate.discoveredAt || new Date().toISOString())
+  };
+}
+
+function normalizeDiscoveryRecommendation(recommendation = {}) {
+  return {
+    candidateId: String(recommendation.candidateId || ''),
+    score: Math.max(0, Math.min(1, Number(recommendation.score || 0))),
+    matchedPaperIds: (Array.isArray(recommendation.matchedPaperIds) ? recommendation.matchedPaperIds : []).map(String).slice(0, 3),
+    sharedTerms: (Array.isArray(recommendation.sharedTerms) ? recommendation.sharedTerms : []).map((term) => cleanText(term)).filter(Boolean).slice(0, 5),
+    reason: cleanText(recommendation.reason || '')
+  };
+}
+
+function normalizeDiscoveryFeedback(feedback) {
+  if (!feedback || typeof feedback !== 'object' || Array.isArray(feedback)) {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(feedback)
+      .filter(([, value]) => ['dismissed', 'imported'].includes(value))
+      .map(([id, value]) => [String(id), value])
+  );
+}
+
+function normalizeDiscoveryEmbeddings(embeddings) {
+  const source = embeddings && typeof embeddings === 'object' && !Array.isArray(embeddings) ? embeddings : {};
+  const records = source.records && typeof source.records === 'object' && !Array.isArray(source.records) ? source.records : {};
+  const normalizedRecords = {};
+
+  for (const [id, record] of Object.entries(records)) {
+    const values = Array.isArray(record?.values) ? record.values.map(Number).filter(Number.isFinite) : [];
+    if (record?.textHash && values.length === 384) {
+      normalizedRecords[String(id)] = { textHash: String(record.textHash), values };
+    }
+  }
+
+  return {
+    model: source.model === LOCAL_EMBEDDING_MODEL_VERSION ? source.model : LOCAL_EMBEDDING_MODEL_VERSION,
+    records: normalizedRecords
+  };
 }
 
 function normalizePaper(input = {}, existing = {}) {
@@ -1853,6 +1990,305 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
 }
 
+async function getLocalEmbeddingPipeline() {
+  if (!embeddingPipelinePromise) {
+    embeddingPipelinePromise = (async () => {
+      const { pipeline, env } = await import('@huggingface/transformers');
+      const { modelCacheDir } = getStorePaths();
+      await fs.mkdir(modelCacheDir, { recursive: true });
+      env.cacheDir = modelCacheDir;
+      env.logLevel = 'error';
+      return pipeline('feature-extraction', LOCAL_EMBEDDING_MODEL, { dtype: 'q8' });
+    })().catch((error) => {
+      embeddingPipelinePromise = null;
+      throw error;
+    });
+  }
+
+  return embeddingPipelinePromise;
+}
+
+function getDiscoveryText(item = {}) {
+  return cleanText([item.title, item.abstract, normalizeTags(item.tags).join(' '), item.venue].filter(Boolean).join('\n')).slice(0, 6000);
+}
+
+function getDiscoveryTextHash(text) {
+  return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+async function createLocalEmbeddings(texts) {
+  const pipeline = await getLocalEmbeddingPipeline();
+  const output = await pipeline(texts, { pooling: 'mean', normalize: true });
+  const dimensions = output?.dims || [];
+  const values = Array.from(output?.data || []);
+  const count = Array.isArray(texts) ? texts.length : 1;
+  const width = dimensions[dimensions.length - 1] || 384;
+
+  if (!values.length || width !== 384 || values.length !== count * width) {
+    throw new Error('The local embedding model returned an unexpected vector shape.');
+  }
+
+  return Array.from({ length: count }, (_item, index) => values.slice(index * width, (index + 1) * width));
+}
+
+async function ensureDiscoveryEmbeddings(discovery, entities) {
+  const records = discovery.embeddings.records;
+  const missing = [];
+  const resolved = new Map();
+
+  for (const entity of entities) {
+    const text = getDiscoveryText(entity.item);
+    const textHash = getDiscoveryTextHash(text);
+    const saved = records[entity.id];
+
+    if (saved?.textHash === textHash && saved.values.length === 384) {
+      resolved.set(entity.id, saved.values);
+    } else if (text) {
+      missing.push({ ...entity, text, textHash });
+    }
+  }
+
+  for (let index = 0; index < missing.length; index += 16) {
+    const batch = missing.slice(index, index + 16);
+    const embeddings = await createLocalEmbeddings(batch.map((entity) => entity.text));
+
+    batch.forEach((entity, batchIndex) => {
+      const values = embeddings[batchIndex];
+      records[entity.id] = { textHash: entity.textHash, values };
+      resolved.set(entity.id, values);
+    });
+  }
+
+  return resolved;
+}
+
+function cosineSimilarity(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length || !left.length) {
+    return 0;
+  }
+
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+
+  for (let index = 0; index < left.length; index += 1) {
+    dot += left[index] * right[index];
+    leftMagnitude += left[index] * left[index];
+    rightMagnitude += right[index] * right[index];
+  }
+
+  return leftMagnitude && rightMagnitude ? dot / Math.sqrt(leftMagnitude * rightMagnitude) : 0;
+}
+
+function getDiscoveryTerms(item) {
+  const stopWords = new Set(['about', 'after', 'also', 'among', 'approach', 'based', 'between', 'from', 'into', 'more', 'paper', 'papers', 'results', 'study', 'that', 'their', 'these', 'this', 'through', 'using', 'with', 'which']);
+  return new Set(
+    getDiscoveryText(item)
+      .toLowerCase()
+      .match(/[a-z][a-z0-9-]{3,}/g)
+      ?.filter((term) => !stopWords.has(term)) || []
+  );
+}
+
+function getSharedDiscoveryTerms(candidate, match) {
+  const candidateTerms = getDiscoveryTerms(candidate);
+  const matchTerms = getDiscoveryTerms(match);
+  return [...candidateTerms].filter((term) => matchTerms.has(term)).slice(0, 5);
+}
+
+function getFreshnessScore(value) {
+  const timestamp = Date.parse(value || '');
+  if (Number.isNaN(timestamp)) {
+    return 0;
+  }
+
+  const ageInDays = Math.max(0, (Date.now() - timestamp) / 86400000);
+  return Math.max(0, 1 - ageInDays / DISCOVERY_LOOKBACK_DAYS);
+}
+
+function buildDiscoveryReason(candidate, matchedPapers, sharedTerms) {
+  const titles = matchedPapers.slice(0, 2).map((paper) => `“${paper.title}”`);
+  const topics = sharedTerms.length ? ` Shared themes: ${sharedTerms.join(', ')}.` : '';
+  return titles.length ? `Closest to ${titles.join(' and ')}.${topics}` : 'Related to the themes in your local library.';
+}
+
+async function refreshDiscovery(library) {
+  const discovery = normalizeDiscovery(library.discovery);
+  const selectedVenues = discovery.venues.filter((venue) => venue.enabled);
+
+  if (!selectedVenues.length) {
+    throw new Error('Choose at least one venue to comb first.');
+  }
+
+  const candidateGroups = await Promise.all(selectedVenues.map((venue) => fetchVenueProceedings(venue).catch(() => [])));
+  const existingCandidates = new Map(discovery.candidates.map((candidate) => [candidate.id, candidate]));
+  const libraryPaperIds = new Set(library.papers.map((paper) => paper.id));
+  const knownDoi = new Set(library.papers.map((paper) => normalizeDoi(paper.doi)).filter(Boolean));
+  const knownTitles = new Set(library.papers.map((paper) => normalizeDiscoveryTitle(paper.title)).filter(Boolean));
+
+  for (const candidate of candidateGroups.flat()) {
+    if (knownDoi.has(candidate.doi) || knownTitles.has(normalizeDiscoveryTitle(candidate.title))) {
+      continue;
+    }
+
+    existingCandidates.set(candidate.id, candidate);
+  }
+
+  discovery.candidates = [...existingCandidates.values()]
+    .sort((left, right) => Date.parse(right.publicationDate || right.discoveredAt) - Date.parse(left.publicationDate || left.discoveredAt))
+    .slice(0, DISCOVERY_MAX_CANDIDATES);
+
+  const libraryPapers = library.papers.filter((paper) => getDiscoveryText(paper));
+  const visibleCandidates = discovery.candidates.filter((candidate) => !discovery.feedback[candidate.id] && getDiscoveryText(candidate));
+
+  if (!libraryPapers.length || !visibleCandidates.length) {
+    discovery.recommendations = [];
+    discovery.lastRefreshedAt = new Date().toISOString();
+    discovery.lastError = libraryPapers.length
+      ? 'No recent proceedings metadata was found for the selected venues. Try another venue or refresh later.'
+      : 'Add papers with a title, abstract, or tags before asking for recommendations.';
+    library.discovery = discovery;
+    await writeLibrary(library);
+    return discovery;
+  }
+
+  const liveEmbeddingIds = new Set([
+    ...libraryPapers.map((paper) => `paper:${paper.id}`),
+    ...discovery.candidates.map((candidate) => `candidate:${candidate.id}`)
+  ]);
+  for (const id of Object.keys(discovery.embeddings.records)) {
+    if (!liveEmbeddingIds.has(id)) {
+      delete discovery.embeddings.records[id];
+    }
+  }
+
+  const embeddings = await ensureDiscoveryEmbeddings(discovery, [
+    ...libraryPapers.map((paper) => ({ id: `paper:${paper.id}`, item: paper })),
+    ...visibleCandidates.map((candidate) => ({ id: `candidate:${candidate.id}`, item: candidate }))
+  ]);
+
+  discovery.recommendations = visibleCandidates
+    .map((candidate) => {
+      const candidateEmbedding = embeddings.get(`candidate:${candidate.id}`);
+      const matches = libraryPapers
+        .map((paper) => ({ paper, similarity: cosineSimilarity(candidateEmbedding, embeddings.get(`paper:${paper.id}`)) }))
+        .sort((left, right) => right.similarity - left.similarity)
+        .slice(0, 3);
+      const bestSimilarity = Math.max(0, matches[0]?.similarity || 0);
+      const sharedTerms = getSharedDiscoveryTerms(candidate, matches[0]?.paper || {});
+      const score = Math.max(0, Math.min(1, bestSimilarity * 0.9 + getFreshnessScore(candidate.publicationDate) * 0.1));
+
+      return {
+        candidateId: candidate.id,
+        score,
+        matchedPaperIds: matches.filter((match) => libraryPaperIds.has(match.paper.id)).map((match) => match.paper.id),
+        sharedTerms,
+        reason: buildDiscoveryReason(candidate, matches.map((match) => match.paper), sharedTerms)
+      };
+    })
+    .filter((recommendation) => recommendation.score > 0.18)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 40);
+
+  discovery.lastRefreshedAt = new Date().toISOString();
+  discovery.lastError = '';
+  library.discovery = discovery;
+  await writeLibrary(library);
+  return discovery;
+}
+
+async function fetchVenueProceedings(venue) {
+  const source = await findOpenAlexSource(venue);
+  if (!source?.id) {
+    return [];
+  }
+
+  const fromDate = new Date(Date.now() - DISCOVERY_LOOKBACK_DAYS * 86400000).toISOString().slice(0, 10);
+  const filter = `primary_location.source.id:${source.id},from_publication_date:${fromDate}`;
+  const url = new URL(`${OPENALEX_API_URL}/works`);
+  url.searchParams.set('filter', filter);
+  url.searchParams.set('sort', 'publication_date:desc');
+  url.searchParams.set('per-page', String(DISCOVERY_MAX_PAPERS_PER_VENUE));
+
+  const response = await fetchWithTimeout(url.toString(), {
+    headers: { Accept: 'application/json', 'User-Agent': `${APP_NAME}/${app.getVersion()}` }
+  });
+
+  if (!response.ok) {
+    throw new Error(`Proceedings lookup failed with ${response.status}`);
+  }
+
+  const works = (await response.json())?.results || [];
+  return works.map((work) => normalizeOpenAlexWork(work, venue)).filter((candidate) => candidate.title);
+}
+
+async function findOpenAlexSource(venue) {
+  const url = new URL(`${OPENALEX_API_URL}/sources`);
+  url.searchParams.set('search', venue.sourceQuery || venue.name);
+  url.searchParams.set('per-page', '10');
+  const response = await fetchWithTimeout(url.toString(), {
+    headers: { Accept: 'application/json', 'User-Agent': `${APP_NAME}/${app.getVersion()}` }
+  });
+
+  if (!response.ok) {
+    return null;
+  }
+
+  const results = (await response.json())?.results || [];
+  const expectedNames = [venue.name, venue.sourceQuery, ...(venue.aliases || [])].map(normalizeDiscoveryTitle).filter(Boolean);
+  const bestMatch = results
+    .map((source) => ({ source, score: getVenueSourceScore(normalizeDiscoveryTitle(source.display_name), expectedNames) }))
+    .sort((left, right) => right.score - left.score)[0];
+
+  return bestMatch?.score >= 0.5 ? bestMatch.source : null;
+}
+
+function getVenueSourceScore(name, expectedNames) {
+  return Math.max(
+    ...expectedNames.map((expected) => {
+      if (name === expected) return 3;
+      if (name.includes(expected) || expected.includes(name)) return 2;
+      return expected.split(' ').filter((term) => term.length > 3 && name.includes(term)).length / Math.max(1, expected.split(' ').length);
+    }),
+    0
+  );
+}
+
+function normalizeDiscoveryTitle(value) {
+  return cleanText(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function normalizeOpenAlexWork(work, venue) {
+  const doi = normalizeDoi(work.doi || '');
+  const sourceUrl = normalizeUrl(work.primary_location?.landing_page_url || work.open_access?.oa_url || (doi ? `https://doi.org/${doi}` : ''));
+  return normalizeDiscoveryCandidate({
+    id: `openalex:${String(work.id || '').split('/').pop()}`,
+    title: work.title,
+    authors: (work.authorships || []).map((authorship) => authorship.author?.display_name).filter(Boolean).join(', '),
+    abstract: openAlexAbstractToText(work.abstract_inverted_index),
+    venue: venue.name,
+    venueId: venue.id,
+    year: work.publication_year ? String(work.publication_year) : '',
+    publicationDate: work.publication_date || '',
+    doi,
+    sourceUrl,
+    pdfUrl: normalizeUrl(work.primary_location?.pdf_url || ''),
+    discoveredAt: new Date().toISOString()
+  });
+}
+
+function openAlexAbstractToText(index) {
+  if (!index || typeof index !== 'object') {
+    return '';
+  }
+
+  return Object.entries(index)
+    .flatMap(([term, positions]) => (Array.isArray(positions) ? positions.map((position) => [position, term]) : []))
+    .sort((left, right) => left[0] - right[0])
+    .map(([, term]) => term)
+    .join(' ');
+}
+
 app.whenReady().then(async () => {
   await migrateLegacyStoreIfNeeded();
   await ensureStore();
@@ -1873,6 +2309,122 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('library:get', async () => {
   return readLibrary();
+});
+
+ipcMain.handle('discovery:updateVenues', async (_event, venueIds) => {
+  const library = await readLibrary();
+  const enabledIds = new Set(Array.isArray(venueIds) ? venueIds.map(String) : []);
+  const discovery = normalizeDiscovery(library.discovery);
+  library.discovery = normalizeDiscovery({
+    ...discovery,
+    venues: discovery.venues.map((venue) => ({ ...venue, enabled: enabledIds.has(venue.id) }))
+  });
+  await writeLibrary(library);
+  return library.discovery;
+});
+
+ipcMain.handle('discovery:createVenue', async (_event, input) => {
+  const library = await readLibrary();
+  const discovery = normalizeDiscovery(library.discovery);
+  const requested = normalizeDiscoveryVenue(input);
+
+  if (!requested.name) {
+    throw new Error('Enter a conference or venue name.');
+  }
+
+  const existing = discovery.venues.find((venue) => normalizeDiscoveryTitle(venue.name) === normalizeDiscoveryTitle(requested.name));
+  if (existing) {
+    existing.enabled = true;
+    library.discovery = discovery;
+    await writeLibrary(library);
+    return discovery;
+  }
+
+  const usedIds = new Set(discovery.venues.map((venue) => venue.id));
+  const baseId = requested.id || createId();
+  let id = baseId;
+  let suffix = 2;
+
+  while (usedIds.has(id)) {
+    id = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+
+  discovery.venues.push({ ...requested, id, enabled: true });
+  library.discovery = discovery;
+  await writeLibrary(library);
+  return discovery;
+});
+
+ipcMain.handle('discovery:refresh', async () => {
+  const library = await readLibrary();
+  return refreshDiscovery(library);
+});
+
+ipcMain.handle('discovery:setFeedback', async (_event, candidateId, value) => {
+  const library = await readLibrary();
+  const discovery = normalizeDiscovery(library.discovery);
+  const id = String(candidateId || '');
+
+  if (!discovery.candidates.some((candidate) => candidate.id === id) || !['dismissed', 'imported'].includes(value)) {
+    throw new Error('That discovery recommendation is no longer available.');
+  }
+
+  discovery.feedback[id] = value;
+  library.discovery = discovery;
+  await writeLibrary(library);
+  return discovery;
+});
+
+ipcMain.handle('discovery:importCandidate', async (_event, candidateId, bucketId) => {
+  const library = await readLibrary();
+  const discovery = normalizeDiscovery(library.discovery);
+  const candidate = discovery.candidates.find((item) => item.id === String(candidateId || ''));
+
+  if (!candidate) {
+    throw new Error('That discovery recommendation is no longer available.');
+  }
+
+  const alreadySaved = library.papers.find(
+    (paper) => (candidate.doi && normalizeDoi(paper.doi) === candidate.doi) || normalizeDiscoveryTitle(paper.title) === normalizeDiscoveryTitle(candidate.title)
+  );
+
+  if (alreadySaved) {
+    discovery.feedback[candidate.id] = 'imported';
+    library.discovery = discovery;
+    await writeLibrary(library);
+    return { paper: alreadySaved, discovery };
+  }
+
+  const paper = normalizePaper({
+    title: candidate.title,
+    authors: candidate.authors,
+    venue: candidate.venue,
+    year: candidate.year,
+    abstract: candidate.abstract,
+    doi: candidate.doi,
+    sourceUrl: candidate.sourceUrl || candidate.pdfUrl,
+    status: 'to-read',
+    bucketId: library.buckets.some((bucket) => bucket.id === bucketId) ? bucketId : library.buckets[0]?.id || 'general',
+    tags: [candidate.venue].filter(Boolean)
+  });
+
+  library.papers.unshift(paper);
+  discovery.feedback[candidate.id] = 'imported';
+  library.discovery = discovery;
+  await writeLibrary(library);
+  return { paper, discovery };
+});
+
+ipcMain.handle('discovery:openSource', async (_event, url) => {
+  const safeUrl = normalizeUrl(url);
+
+  if (!safeUrl) {
+    return { opened: false };
+  }
+
+  await shell.openExternal(safeUrl);
+  return { opened: true };
 });
 
 ipcMain.handle('paper:create', async (_event, input) => {

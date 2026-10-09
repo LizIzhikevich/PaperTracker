@@ -16,6 +16,7 @@ The app is built for macOS and Windows with Electron. All papers and state are s
 - Reorder, rename, recolor, and delete binders from the sidebar without deleting their papers.
 - Keep notes, tags, priority, rating, venue, year, and deadline per paper.
 - Surface the next best reading actions without forcing calendar-style scheduling.
+- Let researchers choose conference proceedings to comb, then recommend recent papers using embeddings computed locally from their library metadata.
 - Nudge the user about stale papers, weekly reading momentum, and approaching deadlines.
 
 ## Interface Direction
@@ -53,6 +54,14 @@ The UI borrows the calm density of Motion's calendar app without becoming a cale
 - `lastOpenedAt`
 - `finishedAt`
 
+### Discovery
+
+- `venues` — user-added venues explicitly enabled by the user; suggestions come only from venues already in their library.
+- `candidates` — normalized recent proceedings metadata and provenance.
+- `recommendations` — local similarity score, matched library papers, and deterministic explanation.
+- `feedback` — imported and dismissed recommendation IDs.
+- `embeddings` — cached local vectors keyed by a content hash and model version.
+
 ### Binder
 
 - `id`
@@ -69,3 +78,4 @@ The UI borrows the calm density of Motion's calendar app without becoming a cale
 - Citation import/export.
 - Recurring reminders.
 - Optional cloud sync as an explicit opt-in.
+- Optional local generative explanations for devices that can run a downloaded chat model.

@@ -1,6 +1,6 @@
 {
   "name": "paper-tracker",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "A local-first desktop paper workflow tracker for macOS and Windows.",
   "main": "src/main.js",
   "private": true,
@@ -11,8 +11,9 @@
     "dev": "electron .",
     "start": "electron .",
     "check": "node --check src/main.js && node --check src/preload.js && node --check src/renderer/app.js",
-    "dist": "electron-builder --publish=never",
-    "dist:mac": "electron-builder --mac --publish=never",
+    "dist": "pnpm check && electron-builder --publish=never",
+    "dist:mac": "pnpm run package:mac",
+    "package:mac": "pnpm check && electron-builder --mac --publish=never",
     "dist:win": "electron-builder --win --publish=never"
   },
   "keywords": [
@@ -28,12 +29,16 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
     "pdf-parse": "1.1.1"
   },
   "build": {
     "appId": "edu.ucla.papertracker",
     "productName": "PaperTracker",
     "asar": true,
+    "asarUnpack": [
+      "node_modules/onnxruntime-node/**"
+    ],
     "directories": {
       "output": "release"
     },
@@ -45,6 +50,7 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
+      "icon": "assets/papertracker-icon.png",
       "target": [
         "dmg",
         "zip"

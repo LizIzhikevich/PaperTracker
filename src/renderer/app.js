@@ -74,6 +74,9 @@ const state = {
   isCreatingBinder: false,
   isChoosingPaperSource: false,
   isAddingLink: false,
+  discovery: null,
+  discoveryStatus: '',
+  discoveryRefreshing: false,
   renamingBucketId: '',
   coloringBucketId: '',
   linkCaptureStatus: '',
@@ -186,6 +189,37 @@ function getCurrentBucket() {
   return state.buckets.find((bucket) => bucket.id === state.selectedBucketId) || state.buckets[0] || { id: defaultBucketId, name: 'General Reading' };
 }
 
+function getDiscovery() {
+  const saved = state.discovery && typeof state.discovery === 'object' ? state.discovery : {};
+  return {
+    venues: Array.isArray(saved.venues) ? saved.venues : [],
+    candidates: Array.isArray(saved.candidates) ? saved.candidates : [],
+    recommendations: Array.isArray(saved.recommendations) ? saved.recommendations : [],
+    feedback: saved.feedback && typeof saved.feedback === 'object' ? saved.feedback : {},
+    lastRefreshedAt: saved.lastRefreshedAt || '',
+    lastError: saved.lastError || ''
+  };
+}
+
+function getSuggestedDiscoveryVenues() {
+  const addedNames = new Set(getDiscovery().venues.map((venue) => normalizeDiscoveryVenueName(venue.name)));
+  return [...new Set(state.papers.map((paper) => String(paper.venue || '').trim()).filter(Boolean))]
+    .filter((venue) => !addedNames.has(normalizeDiscoveryVenueName(venue)))
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function normalizeDiscoveryVenueName(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function getDiscoveryRecommendationCount() {
+  const discovery = getDiscovery();
+  return discovery.recommendations.filter((recommendation) => !discovery.feedback[recommendation.candidateId]).length;
+}
+
 function getVisiblePapers() {
   const query = state.query.trim().toLowerCase();
 
@@ -207,6 +241,10 @@ function getSelectedPaper() {
 function getBucketCount(bucketId) {
   if (bucketId === 'library') {
     return state.papers.length;
+  }
+
+  if (bucketId === 'discovery') {
+    return getDiscoveryRecommendationCount();
   }
 
   return state.papers.filter((paper) => paper.bucketId === bucketId).length;
@@ -830,6 +868,11 @@ function renderSidebar() {
           <span>Library</span>
           <small>${getBucketCount('library')}</small>
         </button>
+        <button class="bucket-item ${state.selectedBucketId === 'discovery' ? 'is-active' : ''}" data-bucket-id="discovery">
+          <span class="nav-icon">${renderIcon('spark')}</span>
+          <span>Discover</span>
+          <small>${getBucketCount('discovery')}</small>
+        </button>
         ${renderBinderGroup('active', 'Active', summary.activeTotals)}
         ${renderBinderGroup('archived', 'Archived', summary.archivedTotals)}
       </nav>
@@ -1046,18 +1089,126 @@ function renderIcon(name) {
     archive: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 5h10v8H3z"/><path d="M2.5 3h11v2h-11z"/><path d="M6 8h4"/></svg>',
     binder: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.2 2.8h8.3c.7 0 1.3.6 1.3 1.3v9.1H4.5c-.7 0-1.3-.6-1.3-1.3z"/><path d="M4.5 13.2c-.7 0-1.3-.6-1.3-1.3s.6-1.3 1.3-1.3h8.3"/><path d="M5.8 2.8v7.8"/><path d="M7.3 5.1h3.2"/></svg>'
     ,
-    link: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.7 5.2 8 3.9a3 3 0 0 1 4.2 4.2l-1.5 1.5"/><path d="M9.3 10.8 8 12.1a3 3 0 0 1-4.2-4.2l1.5-1.5"/><path d="m6.4 9.6 3.2-3.2"/></svg>'
+    link: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.7 5.2 8 3.9a3 3 0 0 1 4.2 4.2l-1.5 1.5"/><path d="M9.3 10.8 8 12.1a3 3 0 0 1-4.2-4.2l1.5-1.5"/><path d="m6.4 9.6 3.2-3.2"/></svg>',
+    spark: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m8 1.8.9 4.2 4.1 1.9-4.1 1.9L8 14l-.9-4.2L3 7.9 7.1 6z"/></svg>'
   };
 
   return icons[name] || '';
 }
 
 function renderWorkspace() {
+  if (state.selectedBucketId === 'discovery') {
+    return renderDiscovery();
+  }
+
   if (state.selectedBucketId === 'library') {
     return renderLibraryHome();
   }
 
   return renderBoard();
+}
+
+function renderDiscovery() {
+  const discovery = getDiscovery();
+  const hasDesktopDiscovery = Boolean(paperApi.refreshDiscovery);
+  const recommendations = discovery.recommendations
+    .filter((recommendation) => !discovery.feedback[recommendation.candidateId])
+    .map((recommendation) => ({ recommendation, candidate: discovery.candidates.find((candidate) => candidate.id === recommendation.candidateId) }))
+    .filter((item) => item.candidate);
+  const enabledCount = discovery.venues.filter((venue) => venue.enabled).length;
+  const suggestedVenues = getSuggestedDiscoveryVenues();
+  const refreshLabel = state.discoveryRefreshing ? 'Preparing local model…' : discovery.lastRefreshedAt ? 'Refresh recommendations' : 'Find recent papers';
+
+  return `
+    <main class="workspace discovery-workspace">
+      <header class="topbar discovery-topbar">
+        <div class="topbar-main">
+          <div>
+            <span class="section-kicker">Local discovery</span>
+            <h1>Find papers you may like</h1>
+          </div>
+          <button class="discovery-refresh" data-action="refresh-discovery" type="button" ${!hasDesktopDiscovery || !enabledCount || state.discoveryRefreshing ? 'disabled' : ''}>${escapeHtml(refreshLabel)}</button>
+        </div>
+      </header>
+
+      <section class="discovery-intro">
+        <p>Choose the proceedings you want to comb, then refresh to look for recent papers.</p>
+        <form class="discovery-venue-form" data-discovery-venue-form>
+          <input name="venueName" placeholder="Add a conference or venue" autocomplete="off" ${hasDesktopDiscovery ? '' : 'disabled'}>
+          <button type="submit" ${hasDesktopDiscovery ? '' : 'disabled'}>Add</button>
+        </form>
+        ${
+          suggestedVenues.length
+            ? `<div class="discovery-suggestions"><span>From your library</span><div>${suggestedVenues
+                .map((venue) => `<button type="button" data-action="add-suggested-venue" data-venue-name="${escapeHtml(venue)}">+ ${escapeHtml(venue)}</button>`)
+                .join('')}</div></div>`
+            : ''
+        }
+        <div class="discovery-venue-list" aria-label="Venues to comb">
+          ${discovery.venues
+            .map(
+              (venue) => `
+                <label class="discovery-venue ${venue.enabled ? 'is-selected' : ''}">
+                  <input type="checkbox" value="${escapeHtml(venue.id)}" data-discovery-venue ${venue.enabled ? 'checked' : ''} ${hasDesktopDiscovery ? '' : 'disabled'}>
+                  <span>${escapeHtml(venue.name)}</span>
+                </label>
+              `
+            )
+          .join('')}
+        </div>
+        ${state.discoveryStatus ? `<p class="discovery-status">${escapeHtml(state.discoveryStatus)}</p>` : ''}
+        ${discovery.lastError ? `<p class="discovery-status is-error">${escapeHtml(discovery.lastError)}</p>` : ''}
+        ${discovery.lastRefreshedAt ? `<p class="discovery-meta">Last refreshed ${escapeHtml(formatDiscoveryTimestamp(discovery.lastRefreshedAt))}. ${recommendations.length} recommendation${recommendations.length === 1 ? '' : 's'} ready.</p>` : ''}
+        ${hasDesktopDiscovery ? '' : '<p class="discovery-status">Discovery runs in the desktop app.</p>'}
+      </section>
+
+      <section class="discovery-results">
+        <header>
+          <div>
+            <span class="section-kicker">Discovery inbox</span>
+            <h2>Recent proceedings</h2>
+          </div>
+          <span>${recommendations.length ? `${recommendations.length} matches` : ''}</span>
+        </header>
+        ${
+          recommendations.length
+            ? `<div class="discovery-card-list">${recommendations.map(renderDiscoveryCard).join('')}</div>`
+            : `<div class="discovery-empty"><h2>${enabledCount ? 'No recommendations yet' : 'Add a venue to begin'}</h2><p>${enabledCount ? 'Refresh to comb recent proceedings and rank them against your library.' : 'Type a conference name, or add one of the venues already in your library.'}</p></div>`
+        }
+      </section>
+    </main>
+  `;
+}
+
+function formatDiscoveryTimestamp(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'recently' : new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(date);
+}
+
+function renderDiscoveryCard({ recommendation, candidate }) {
+  const matchedTitles = recommendation.matchedPaperIds
+    .map((id) => state.papers.find((paper) => paper.id === id)?.title)
+    .filter(Boolean)
+    .slice(0, 2);
+  const publication = [candidate.venue, candidate.publicationDate || candidate.year].filter(Boolean).join(' · ');
+  const score = Math.round(recommendation.score * 100);
+
+  return `
+    <article class="discovery-card">
+      <div class="discovery-card-copy">
+        <div class="discovery-card-meta"><span>${escapeHtml(publication)}</span><strong>${score}% match</strong></div>
+        <h3>${escapeHtml(candidate.title)}</h3>
+        <p class="discovery-authors">${escapeHtml(candidate.authors || 'Unknown authors')}</p>
+        ${candidate.abstract ? `<p class="discovery-abstract">${escapeHtml(candidate.abstract)}</p>` : ''}
+        <div class="discovery-reason"><strong>Why this match</strong><span>${escapeHtml(recommendation.reason || 'Related to your local library.')}</span>${matchedTitles.length ? `<small>Matches: ${escapeHtml(matchedTitles.join(' · '))}</small>` : ''}</div>
+      </div>
+      <div class="discovery-card-actions">
+        <button class="discovery-import" data-action="import-discovery" data-candidate-id="${escapeHtml(candidate.id)}" type="button">Add to library</button>
+        ${candidate.sourceUrl || candidate.pdfUrl ? `<button class="secondary-action" data-action="open-discovery-source" data-source-url="${escapeHtml(candidate.sourceUrl || candidate.pdfUrl)}" type="button">Open source</button>` : ''}
+        <button class="discovery-dismiss" data-action="dismiss-discovery" data-candidate-id="${escapeHtml(candidate.id)}" type="button">Not interested</button>
+      </div>
+    </article>
+  `;
 }
 
 function renderLibraryHome() {
@@ -1763,6 +1914,24 @@ function bindEvents() {
     });
   }
 
+  document.querySelectorAll('[data-discovery-venue]').forEach((input) => {
+    input.addEventListener('change', updateDiscoveryVenues);
+  });
+  document.querySelector('[data-discovery-venue-form]')?.addEventListener('submit', createDiscoveryVenue);
+  document.querySelectorAll('[data-action="add-suggested-venue"]').forEach((button) => {
+    button.addEventListener('click', () => createDiscoveryVenueFromName(button.dataset.venueName));
+  });
+  document.querySelector('[data-action="refresh-discovery"]')?.addEventListener('click', refreshDiscovery);
+  document.querySelectorAll('[data-action="import-discovery"]').forEach((button) => {
+    button.addEventListener('click', () => importDiscoveryCandidate(button.dataset.candidateId));
+  });
+  document.querySelectorAll('[data-action="dismiss-discovery"]').forEach((button) => {
+    button.addEventListener('click', () => dismissDiscoveryCandidate(button.dataset.candidateId));
+  });
+  document.querySelectorAll('[data-action="open-discovery-source"]').forEach((button) => {
+    button.addEventListener('click', () => openDiscoverySource(button.dataset.sourceUrl));
+  });
+
   document.querySelectorAll('[data-field]').forEach((field) => {
     field.addEventListener('keydown', (event) => saveFieldFromKeyboard(event, field));
     field.addEventListener('change', () => saveSelectedField(field));
@@ -1988,6 +2157,97 @@ async function openUpdateDownload() {
   }
 
   await paperApi.openUpdateUrl(target);
+}
+
+async function updateDiscoveryVenues() {
+  if (!paperApi.updateDiscoveryVenues) {
+    return;
+  }
+
+  const venueIds = [...document.querySelectorAll('[data-discovery-venue]:checked')].map((input) => input.value);
+  try {
+    state.discovery = await paperApi.updateDiscoveryVenues(venueIds);
+    state.discoveryStatus = '';
+  } catch (error) {
+    state.discoveryStatus = `Could not save venues: ${error.message || error}`;
+  }
+  render();
+}
+
+async function createDiscoveryVenue(event) {
+  event.preventDefault();
+  const name = new FormData(event.currentTarget).get('venueName');
+  await createDiscoveryVenueFromName(name);
+}
+
+async function createDiscoveryVenueFromName(name) {
+  const venueName = String(name || '').trim();
+  if (!venueName || !paperApi.createDiscoveryVenue) {
+    return;
+  }
+
+  try {
+    state.discovery = await paperApi.createDiscoveryVenue({ name: venueName });
+    state.discoveryStatus = '';
+  } catch (error) {
+    state.discoveryStatus = `Could not add venue: ${error.message || error}`;
+  }
+  render();
+}
+
+async function refreshDiscovery() {
+  if (!paperApi.refreshDiscovery || state.discoveryRefreshing) {
+    return;
+  }
+
+  state.discoveryRefreshing = true;
+  state.discoveryStatus = 'Downloading the local embedding model if needed, then combing selected proceedings…';
+  render();
+
+  try {
+    state.discovery = await paperApi.refreshDiscovery();
+    state.discoveryStatus = '';
+  } catch (error) {
+    state.discoveryStatus = `Could not refresh: ${error.message || error}`;
+  } finally {
+    state.discoveryRefreshing = false;
+    render();
+  }
+}
+
+async function importDiscoveryCandidate(candidateId) {
+  if (!paperApi.importDiscoveryCandidate || !candidateId) {
+    return;
+  }
+
+  const targetBucketId = state.buckets[0]?.id || defaultBucketId;
+  const result = await paperApi.importDiscoveryCandidate(candidateId, targetBucketId);
+  state.papers = [result.paper, ...state.papers.filter((paper) => paper.id !== result.paper.id)];
+  state.discovery = result.discovery;
+  state.discoveryStatus = 'Added to your library.';
+  render();
+}
+
+async function dismissDiscoveryCandidate(candidateId) {
+  if (!paperApi.setDiscoveryFeedback || !candidateId) {
+    return;
+  }
+
+  state.discovery = await paperApi.setDiscoveryFeedback(candidateId, 'dismissed');
+  state.discoveryStatus = 'Paper hidden from future recommendations.';
+  render();
+}
+
+async function openDiscoverySource(sourceUrl) {
+  if (!sourceUrl) {
+    return;
+  }
+
+  if (paperApi.openDiscoverySource) {
+    await paperApi.openDiscoverySource(sourceUrl);
+  } else {
+    window.open(sourceUrl, '_blank', 'noopener');
+  }
 }
 
 async function importPdf() {
@@ -2299,6 +2559,7 @@ async function boot() {
 
   const library = await paperApi.getLibrary();
   state.buckets = (library.buckets || getStarterBuckets()).map(normalizeBucket);
+  state.discovery = library.discovery || null;
   state.papers = (library.papers || []).map((paper) =>
     normalizePaper(
       {

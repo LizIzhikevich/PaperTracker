@@ -2,6 +2,12 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('paperTracker', {
   getLibrary: () => ipcRenderer.invoke('library:get'),
+  updateDiscoveryVenues: (venueIds) => ipcRenderer.invoke('discovery:updateVenues', venueIds),
+  createDiscoveryVenue: (venue) => ipcRenderer.invoke('discovery:createVenue', venue),
+  refreshDiscovery: () => ipcRenderer.invoke('discovery:refresh'),
+  setDiscoveryFeedback: (candidateId, value) => ipcRenderer.invoke('discovery:setFeedback', candidateId, value),
+  importDiscoveryCandidate: (candidateId, bucketId) => ipcRenderer.invoke('discovery:importCandidate', candidateId, bucketId),
+  openDiscoverySource: (url) => ipcRenderer.invoke('discovery:openSource', url),
   createPaper: (paper) => ipcRenderer.invoke('paper:create', paper),
   importPdf: (bucketId) => ipcRenderer.invoke('paper:importPdf', bucketId),
   importPdfPath: (filePath, bucketId) => ipcRenderer.invoke('paper:importPdfPath', filePath, bucketId),

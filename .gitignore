@@ -2,6 +2,8 @@ node_modules/
 .pnpm-store/
 dist/
 out/
+release/
+assets/icon.iconset/
 .DS_Store
 *.log
 IMG_1188.png
